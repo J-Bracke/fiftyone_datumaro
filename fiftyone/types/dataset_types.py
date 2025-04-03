@@ -898,3 +898,20 @@ class PlacesDataset(ImageClassificationDataset):
         import fiftyone.utils.places as foup
 
         return foup.PlacesDatasetImporter
+
+
+class DatumaroDataset(LabeledImageDataset):
+    """A labeled dataset consisting of images and their associated annotations saved in
+    `Datumaro Format <https://open-edge-platform.github.io/datumaro/latest/docs/data-formats/formats/datumaro.html>`_.
+    """
+
+    def get_dataset_importer_cls(self):
+        import fiftyone.utils.datumaro as foud
+
+        return foud.DatumaroDatasetImporter
+
+    def get_dataset_exporter_cls(self):
+        import fiftyone.utils.datumaro as foud
+
+        return foud.DatumaroDatasetExporter
+    
