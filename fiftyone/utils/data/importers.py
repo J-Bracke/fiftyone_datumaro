@@ -60,6 +60,7 @@ def import_samples(
     dynamic=False,
     add_info=True,
     progress=None,
+    overwrite_existing_samples=True
 ):
     """Adds the samples from the given :class:`DatasetImporter` to the dataset.
 
@@ -142,6 +143,9 @@ def import_samples(
             samples = _generate_group_samples(dataset_importer, parse_sample)
         else:
             samples = map(parse_sample, iter(dataset_importer))
+
+        if overwrite_existing_samples:
+            #delete existing samples with same filename before adding the new ones
 
         sample_ids = dataset.add_samples(
             samples,

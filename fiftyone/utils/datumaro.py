@@ -321,12 +321,13 @@ class DatumaroDatasetImporter(
             -   ``True``: load all attributes found
             -   ``False``: do not load attributes
             -   a name or list of names of specific attributes to load
-        image_attrs (True): whether to load image attributes into a seperate label.
+        item_attrs (True): whether to load item attributes into a seperate label.
                             Supported values are:
-            -   ``True``: load all image attributes found
-            -   ``False``: do not load image attributes
+            -   ``True``: load all item attributes found
+            -   ``False``: do not load item attributes
             -   a name or list of names of specific attributes to load
-        tags...
+        tag_attributes (None): a list of attributes names that will be concatenated\
+                               with a seperating underscore to create a tag string.
         only_matching (False): whether to only load labels that match the
             ``classes`` requirement that you provide (True), or to load all
             labels for samples that match the requirements (False)
@@ -359,13 +360,15 @@ class DatumaroDatasetImporter(
         include_id=False,
         include_annotation_id=False,
         ann_attrs=True,
-        image_attrs=True,
+        item_attrs=True,
         only_matching=False,
         use_polylines=False,
         tolerance=None,
         shuffle=False,
         seed=None,
         max_samples=None,
+        tag_attributes=None,
+        read_metadata_from_file=False
     ):
         if dataset_dir is None and data_path is None and labels_path is None:
             raise ValueError(
@@ -405,20 +408,22 @@ class DatumaroDatasetImporter(
         self.include_id = include_id
         self.include_annotation_id = include_annotation_id
         self.ann_attrs = ann_attrs
-        self.image_attrs = image_attrs
+        self.item_attrs = item_attrs
         self.only_matching = only_matching
         self.use_polylines = use_polylines
         self.tolerance = tolerance
+        self.tag_attributes = tag_attributes
+        self.read_metadata_from_file = read_metadata_from_file
 
         self._label_types = _label_types
         self._info = None
         self._classes_map = None
         self._class_ids = None
-        self._image_paths_map = None
-        self._image_dicts_map = None
+        self._item_paths_map = None
         self._annotations = None
         self._filenames = None
         self._iter_filenames = None
+        self._item_attributes = None
 
     def __iter__(self):
         self._iter_filenames = iter(self._filenames)
@@ -431,41 +436,43 @@ class DatumaroDatasetImporter(
         filename = next(self._iter_filenames)
 
         if os.path.isabs(filename):
-            image_path = filename
+            item_path = filename
         else:
-            image_path = self._image_paths_map[filename]
+            item_path = self._item_paths_map[filename]
 
-        image_dict = self._image_dicts_map.get(filename, None)
+        item_metadata = fom.ImageMetadata.build_for(item_path)
 
-        if image_dict is None:
-            image_metadata = fom.ImageMetadata.build_for(image_path)
-            return image_path, image_metadata, None
-
-        image_id = image_dict["id"]
-        width = image_dict["width"]
-        height = image_dict["height"]
-
-        image_metadata = fom.ImageMetadata(width=width, height=height)
+        item_id = ".".join(filename.split(".")[:-1])
+        width = item_metadata.width
+        height = item_metadata.height
 
         label = {}
 
+        # read metadata (like location, sensor settings, etc.) from file into seperate fields
+        if self.read_metadata_from_file:
+            label.update(read_metadata_from_image_file(item_path))
+
+        ## read item attributes into a seperate label of custom type "Item_attributes"
+        if self.item_attrs:
+            if self._item_attributes[item_id]:
+                label["item_attributes"] = Item_attributes.from_dict(self._item_attributes[item_id])
+
         if self._annotations is not None:
-            coco_objects = self._annotations.get(image_id, [])
+            datumaro_objects = self._annotations.get(item_id, [])
             frame_size = (width, height)
 
             if self.only_matching and self._class_ids is not None:
-                coco_objects = _get_matching_objects(
-                    coco_objects, self._class_ids
+                datumaro_objects = _get_matching_objects(
+                    datumaro_objects, self._class_ids
                 )
 
             if "detections" in self._label_types:
-                detections = _coco_objects_to_detections(
-                    coco_objects,
+                detections = _datumaro_objects_to_detections(
+                    datumaro_objects,
                     frame_size,
                     self._classes_map,
-                    self._supercategory_map,
                     False,  # no segmentations
-                    self.include_annotation_id,
+                    self.include_annotation_id
                 )
                 if detections is not None:
                     label["detections"] = detections
@@ -481,11 +488,10 @@ class DatumaroDatasetImporter(
                         self.include_annotation_id,
                     )
                 else:
-                    segmentations = _coco_objects_to_detections(
-                        coco_objects,
+                    segmentations = _datumaro_objects_to_detections(
+                        datumaro_objects,
                         frame_size,
                         self._classes_map,
-                        self._supercategory_map,
                         True,  # load segmentations
                         self.include_annotation_id,
                     )
@@ -505,17 +511,13 @@ class DatumaroDatasetImporter(
                 if keypoints is not None:
                     label["keypoints"] = keypoints
 
-        if "coco_id" in self._label_types:
-            label["coco_id"] = image_id
-
-        if "license" in self._label_types:
-            license_id = image_dict.get("license", None)
-            label["license"] = self._license_map.get(license_id, None)
+        if not label:
+            label = None
 
         if self._has_scalar_labels:
             label = next(iter(label.values())) if label else None
 
-        return image_path, image_metadata, label
+        return item_path, item_metadata, label
 
     @property
     def has_dataset_info(self):
@@ -546,57 +548,49 @@ class DatumaroDatasetImporter(
         return {k: v for k, v in types.items() if k in self._label_types}
 
     def setup(self):
-        image_paths_map = self._load_data_map(self.data_path, recursive=True)
+        item_paths_map = self._load_data_map(self.data_path, recursive=True)
 
-        if self.labels_path is not None and os.path.isfile(self.labels_path):
+        if self.labels_path is not None and os.path.isfile(self.labels_path) and item_paths_map:
             (
                 info,
                 classes_map,
-                image_attr,
+                items,
+                item_attributes,
                 annotations,
             ) = load_datumaro_items(
-                self.labels_path, ann_attrs=self.ann_attrs, image_attrs=self.image_attrs
+                self.labels_path, ann_attrs=self.ann_attrs, item_attrs=self.item_attrs, tag_attributes=self.tag_attributes
             )
 
             if classes_map is not None:
                 info["classes"] = _to_classes(classes_map)
 
-            image_ids = _get_matching_image_ids(
+            item_ids = _get_matching_item_ids(
                 classes_map,
-                images,
+                items,
                 annotations,
-                image_ids=self.image_ids,
+                item_ids=self.item_ids,
                 classes=self.classes,
                 shuffle=self.shuffle,
                 seed=self.seed,
                 max_samples=self.max_samples,
             )
+            item_ids = set(item_ids)
 
-            filenames = [
-                fos.normpath(images[_id]["file_name"]) for _id in image_ids
-            ]
+            filenames = fos.normpath(list(item_paths_map.keys()))
+            if not self.load_all_images_without_labels:
+                # check if image files exist for every item_id
+                item_ids_with_file = [".".join(filename.split(".")[:-1]) for filename in filenames]
+                indices = [index for index, value in enumerate(item_ids_with_file) if value in item_ids]
+                filenames_exist = [filenames[i] for i in indices]
+                filenames = filenames_exist
 
-            _image_ids = set(image_ids)
-            image_dicts_map = {
-                fos.normpath(i["file_name"]): i
-                for _id, i in images.items()
-                if _id in _image_ids
-            }
         else:
             info = {}
             classes_map = None
-            supercategory_map = None
-            image_dicts_map = {}
+            items = None
+            item_attributes = None
             annotations = None
-            filenames = list(image_paths_map.keys())
-
-        if self.include_license:
-            license_map = {
-                l.get("id", None): l.get(self.include_license, None)
-                for l in info.get("licenses", [])
-            }
-        else:
-            license_map = None
+            filenames = fos.normpath(list(item_paths_map.keys()))
 
         if self.only_matching and self.classes is not None:
             class_ids = _get_class_ids(self.classes, classes_map)
@@ -606,10 +600,9 @@ class DatumaroDatasetImporter(
         self._info = info
         self._classes_map = classes_map
         self._class_ids = class_ids
-        self._license_map = license_map
-        self._supercategory_map = supercategory_map
-        self._image_paths_map = image_paths_map
-        self._image_dicts_map = image_dicts_map
+        self._items = items
+        self._item_attributes = item_attributes
+        self._item_paths_map = item_paths_map
         self._annotations = annotations
         self._filenames = filenames
 
@@ -1004,7 +997,10 @@ class DatumaroObject(object):
         self.rle = rle
         self.points = points
         self.bbox = bbox
-        self.tag_attributes = tag_attributes
+        if tag_attributes is not None:
+            self.tag = ["_".join(list(str(attributes.get[tag_attribute, "NN"]) for tag_attribute in tag_attributes))]
+        else:
+            self.tag = []
 
     def to_polyline(
         self,
@@ -1110,8 +1106,7 @@ class DatumaroObject(object):
         frame_size,
         classes_map=None,
         load_segmentation=False,
-        include_id=False,
-        attach_tag=False
+        include_id=False
     ):
         """Returns a :class:`fiftyone.core.labels.Detection` representation of
         the object.
@@ -1150,21 +1145,11 @@ class DatumaroObject(object):
         else:
             mask = None
 
-        if attach_tag:
-            tag= ""
-            for tag_a in self.tag_attributes:
-                if not tag == "":
-                    tag = tag + "_"
-                tag = tag + str(self.attributes.get[tag_a, "NN"])
-        else:
-            tag = []
-
         return fol.Detection(
             label=label,
             bounding_box=bounding_box,
             mask=mask,
-            confidence=self.score,
-            tags=tag,
+            tags=self.tag,
             **attributes,
         )
 
@@ -1204,7 +1189,7 @@ class DatumaroObject(object):
         return d
 
     @classmethod
-    def from_anno_dict(cls, d, ann_attrs=True):
+    def from_anno_dict(cls, d, ann_attrs=True, tag_attributes=None):
         """Creates a :class:`DatumaroObject` from a Datumaro annotation dict.
 
         Args:
@@ -1215,7 +1200,8 @@ class DatumaroObject(object):
                 -   ``True``: load all attributes
                 -   ``False``: do not load attributes
                 -   a name or list of names of specific attributes to load
-            
+            tag_attributes (None): a list of attributes names that will be concatenated\
+                with a seperating underscore to create a tag string.
         Returns:
             a :class:`DatumaroObject`
         """
@@ -1241,7 +1227,8 @@ class DatumaroObject(object):
             visibility=d.get("visibility", None),
             rle=d.get("rle", None),
             points=d.get("points", None),
-            bbox=d.get("bbox", None)
+            bbox=d.get("bbox", None),
+            tag_attributes=tag_attributes
         )
 
     @classmethod
@@ -1382,7 +1369,69 @@ class DatumaroObject(object):
         return label, attributes
 
 
-def load_datumaro_items(json_path, ann_attrs=True, image_attrs=True):
+class Item_attributes(fol._HasID, fol.Label):
+    """
+    
+    """
+
+
+def read_metadata_from_image_file(image_path: str) -> dict:
+    """
+    read metadata from .png file in tEXT format
+    """
+    from PIL import Image
+    import json, fiftyone
+    
+    img = Image.open(image_path)
+    metadata_dict = img.info
+    metadata_fields_dict = {}
+
+    for meta_object in metadata_dict:
+        if meta_object == "recording_location":
+            location = json.loads(metadata_dict[meta_object])
+            metadata_fields_dict["recording_location"] = fiftyone.GeoLocation(point=[location["lon"], location["lat"]])
+        
+        elif meta_object == "recording_timestamp":
+            metadata_fields_dict["recording_timestamp"] = datetime.datetime.fromtimestamp(float(metadata_dict[meta_object]))
+        
+        elif meta_object == "camera_name":
+            metadata_fields_dict["camera_name"] = metadata_dict[meta_object]
+
+        # metadata is a dict formatted in a json string
+        else:
+            meta_dict = json.loads(metadata_dict[meta_object])
+            if meta_object == "weather":
+                meta_dict = flatten_dict(meta_dict)
+            metadata_fields_dict[meta_object] = fiftyone.DynamicEmbeddedDocument().from_dict(meta_dict)
+
+
+def flatten_dict(input_dict, parent_key='', sep='_') -> dict:
+    """
+    Flatten a nested dictionary.
+
+    Parameters:
+    - input_dict: A dictionary to flatten.
+    - parent_key: The base key string (used for recursive calls).
+    - sep: The separator used for the concatenated keys.
+
+    Returns:
+    - A flattened dictionary.
+    """
+    items = {}
+    for k, v in input_dict.items():
+        # Create new key for the flattened dictionary
+        new_key = f"{parent_key}{sep}{k}" if parent_key else k
+        
+        # If the value is a dictionary, recursively flatten it
+        if isinstance(v, list):
+            if isinstance(v[0], dict):
+                items.update(flatten_dict(v[0], new_key, sep=sep))
+        else:
+            items[new_key] = v  # Otherwise, just assign the value
+    return items
+
+
+def load_datumaro_items(json_path, ann_attrs=True, item_attrs=True, tag_attributes=None):
     """Loads the Datumaro items from the given JSON file.
 
     See :ref:`this page <DatumaroDataset-import>` for format details.
@@ -1394,25 +1443,28 @@ def load_datumaro_items(json_path, ann_attrs=True, image_attrs=True):
             -   ``True``: load all attributes found
             -   ``False``: do not load attributes
             -   a name or list of names of specific attributes to load
-        image_attrs (True): whether to load image attributes.
+        item_attrs (True): whether to load image attributes.
                 Supported values are:
                 -   ``True``: load all image attributes
                 -   ``False``: do not load image attributes
                 -   a name or list of names of specific attributes to load
+        tag_attributes (None): a list of attributes names that will be concatenated\
+            with a seperating underscore to create a tag string.
 
     Returns:
         a tuple of
         -   info: a dict of dataset info
         -   classes_map: a dict mapping label IDs to labels
-        -   image_attr: a dict mapping item IDs to a dict of image_attr
+        -   items: a list of item IDs of all items contained in the JSON file
+        -   image_attr: a dict mapping item IDs to a dict of image_attr or ``None``
         -   annotations: a dict mapping item IDs to list of
             :class:`DatumaroObject` instances, or ``None`` for unlabeled datasets
     """
     d = etas.load_json(json_path)
-    return _parse_datumaro_items(d, ann_attrs=ann_attrs, image_attrs=image_attrs)
+    return _parse_datumaro_items(d, ann_attrs=ann_attrs, item_attrs=item_attrs)
 
 
-def _parse_datumaro_items(d, ann_attrs=True, image_attrs=True):
+def _parse_datumaro_items(d, ann_attrs=True, item_attrs=True, tag_attributes=None):
     # Load info
     info = d.get("info", None)
     categories = d.get("categories", None)
@@ -1431,38 +1483,40 @@ def _parse_datumaro_items(d, ann_attrs=True, image_attrs=True):
 
     # Load items and image attributes
     _items = d.get("items", None)
+    items = []
     if _items is not None:
         annotations = defaultdict(list)
-        image_attributes = defaultdict(list)
+        item_attributes = defaultdict(list)
         for i in _items:
+            items.append(i["id"])
             if i["annotations"] is not None:
                 for a in i["annotations"]:
-                    annotations[i["id"]].append(DatumaroObject.from_anno_dict(a, ann_attrs=ann_attrs))
+                    annotations[i["id"]].append(DatumaroObject.from_anno_dict(a, ann_attrs=ann_attrs, tag_attributes=tag_attributes))
             if i["attr"] is not None:
-                if image_attrs is True:
-                    image_attributes[i["id"]].append(i["attr"])
+                if item_attrs is True:
+                    item_attributes[i["id"]].append(i["attr"])
                 else:
-                    image_attributes[i["id"]] = {}
+                    item_attributes[i["id"]] = {}
                 
-                if etau.is_str(image_attrs):
-                    image_attrs = [image_attrs]
+                if etau.is_str(item_attrs):
+                    item_attrs = [item_attrs]
 
-                if isinstance(image_attrs, list):
-                    image_attributes[i["id"]].append({f: i["attr"].get(f, None) for f in image_attrs})       
+                if isinstance(item_attrs, list):
+                    item_attributes[i["id"]].append({f: i["attr"].get(f, None) for f in item_attrs})       
 
         if not len(annotations) == 0:
             annotations = dict(annotations)
         else:
             annotations = None
-        if not len(image_attrs) == 0:
+        if not len(item_attributes) == 0:
             image_attributes = dict(image_attributes)
         else:
             image_attributes = None
     else:
         annotations = None
-        image_attrs = None
+        item_attributes = None
 
-    return info, classes_map, image_attrs, annotations
+    return info, classes_map, items, item_attributes, annotations
 
 
 def parse_datumaro_labels(labels):
@@ -1833,27 +1887,27 @@ def _parse_label_types(label_types):
     return label_types
 
 
-def _get_matching_image_ids(
+def _get_matching_item_ids(
     classes_map,
-    images,
+    items,
     annotations,
-    image_ids=None,
+    item_ids=None,
     classes=None,
     shuffle=False,
     seed=None,
     max_samples=None,
 ):
-    if image_ids is not None:
-        image_ids = _parse_image_ids(image_ids, images)
+    if item_ids is not None:
+        item_ids = _parse_item_ids(item_ids, items)
     else:
-        image_ids = list(images.keys())
+        item_ids = items
 
     if classes is not None:
-        all_ids, any_ids = _get_images_with_classes(
-            image_ids, annotations, classes, classes_map
+        all_ids, any_ids = _get_items_with_classes(
+            item_ids, annotations, classes, classes_map
         )
     else:
-        all_ids = image_ids
+        all_ids = item_ids
         any_ids = []
 
     all_ids = sorted(all_ids)
@@ -1866,12 +1920,12 @@ def _get_matching_image_ids(
         random.shuffle(all_ids)
         random.shuffle(any_ids)
 
-    image_ids = all_ids + any_ids
+    item_ids = all_ids + any_ids
 
     if max_samples is not None:
-        return image_ids[:max_samples]
+        return item_ids[:max_samples]
 
-    return image_ids
+    return item_ids
 
 
 def _get_existing_ids(images_dir, images, image_ids):
@@ -1917,12 +1971,12 @@ def _do_download(args):
     etaw.download_file(url, path=path, quiet=True)
 
 
-def _get_images_with_classes(
-    image_ids, annotations, target_classes, classes_map
+def _get_items_with_classes(
+    item_ids, annotations, target_classes, classes_map
 ):
     if annotations is None:
         logger.warning("Dataset is unlabeled; ignoring classes requirement")
-        return image_ids, []
+        return item_ids, []
 
     if etau.is_str(target_classes):
         target_classes = [target_classes]
@@ -1937,39 +1991,39 @@ def _get_images_with_classes(
 
     all_ids = []
     any_ids = []
-    for image_id in image_ids:
-        coco_objects = annotations.get(image_id, None)
+    for item_id in item_ids:
+        coco_objects = annotations.get(item_id, None)
         if not coco_objects:
             continue
 
-        oids = set(o.category_id for o in coco_objects)
+        oids = set(o.label_id for o in coco_objects)
         if class_ids.issubset(oids):
-            all_ids.append(image_id)
+            all_ids.append(item_id)
         elif class_ids & oids:
-            any_ids.append(image_id)
+            any_ids.append(item_id)
 
     return all_ids, any_ids
 
 
-def _parse_image_ids(raw_image_ids, images, split=None):
+def _parse_item_ids(raw_item_ids, items, split=None):
     # Load IDs from file
-    if etau.is_str(raw_image_ids):
-        image_ids_path = raw_image_ids
-        ext = os.path.splitext(image_ids_path)[-1]
+    if etau.is_str(raw_item_ids):
+        item_ids_path = raw_item_ids
+        ext = os.path.splitext(item_ids_path)[-1]
         if ext == ".txt":
-            raw_image_ids = _load_image_ids_txt(image_ids_path)
+            raw_image_ids = _load_item_ids_txt(item_ids_path)
         elif ext == ".json":
-            raw_image_ids = _load_image_ids_json(image_ids_path)
+            raw_image_ids = _load_item_ids_json(item_ids_path)
         elif ext == ".csv":
-            raw_image_ids = _load_image_ids_csv(image_ids_path)
+            raw_image_ids = _load_item_ids_csv(item_ids_path)
         else:
             raise ValueError(
-                "Invalid image ID file '%s'. Supported formats are .txt, "
+                "Invalid item ID file '%s'. Supported formats are .txt, "
                 ".csv, and .json" % ext
             )
 
-    image_ids = []
-    for raw_id in raw_image_ids:
+    item_ids = []
+    for raw_id in raw_item_ids:
         if etau.is_str(raw_id):
             if "/" in raw_id:
                 _split, raw_id = raw_id.split("/")
@@ -1978,24 +2032,24 @@ def _parse_image_ids(raw_image_ids, images, split=None):
 
             raw_id = int(raw_id.strip())
 
-        image_ids.append(raw_id)
+        item_ids.append(raw_id)
 
     # Validate that IDs exist
-    invalid_ids = [_id for _id in image_ids if _id not in images]
+    invalid_ids = [_id for _id in item_ids if _id not in items]
     if invalid_ids:
         raise ValueError(
             "Found %d invalid IDs, ex: %s" % (len(invalid_ids), invalid_ids[0])
         )
 
-    return image_ids
+    return item_ids
 
 
-def _load_image_ids_txt(txt_path):
+def _load_item_ids_txt(txt_path):
     with open(txt_path, "r") as f:
         return [l.strip() for l in f.readlines()]
 
 
-def _load_image_ids_csv(csv_path):
+def _load_item_ids_csv(csv_path):
     with open(csv_path, "r", newline="") as f:
         dialect = csv.Sniffer().sniff(f.read(10240))
         f.seek(0)
@@ -2004,16 +2058,16 @@ def _load_image_ids_csv(csv_path):
         else:
             reader = csv.reader(f)
 
-        image_ids = [row for row in reader]
+        item_ids = [row for row in reader]
 
-    if isinstance(image_ids[0], list):
+    if isinstance(item_ids[0], list):
         # Flatten list
-        image_ids = [_id for ids in image_ids for _id in ids]
+        item_ids = [_id for ids in item_ids for _id in ids]
 
-    return image_ids
+    return item_ids
 
 
-def _load_image_ids_json(json_path):
+def _load_item_ids_json(json_path):
     return [_id for _id in etas.load_json(json_path)]
 
 
@@ -2035,8 +2089,8 @@ def _get_class_ids(classes, classes_map):
     return class_ids
 
 
-def _get_matching_objects(coco_objects, class_ids):
-    return [obj for obj in coco_objects if obj.category_id in class_ids]
+def _get_matching_objects(datumaro_objects, class_ids):
+    return [obj for obj in datumaro_objects if obj.label_id in class_ids]
 
 
 def _parse_categories(categories, classes=None):
@@ -2085,14 +2139,14 @@ def _datumaro_objects_to_detections(
     frame_size,
     classes_map,
     load_segmentations,
-    include_id,
+    include_id
 ):
     detections = []
     for datumaro_obj in datumaro_objects:
         detection = datumaro_obj.to_detection(
             frame_size,
             classes_map=classes_map,
-            include_id=include_id,
+            include_id=include_id
         )
 
         if detection is not None and (
