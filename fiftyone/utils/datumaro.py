@@ -32,6 +32,7 @@ import fiftyone.core.storage as fos
 import fiftyone.core.utils as fou
 import fiftyone.utils.data as foud
 import fiftyone.utils.eta as foue
+from fiftyone import ViewField as F
 
 mask_utils = fou.lazy_import(
     "pycocotools.mask", callback=lambda: fou.ensure_import("pycocotools")
@@ -41,15 +42,16 @@ mask_utils = fou.lazy_import(
 logger = logging.getLogger(__name__)
 
 
-def add_coco_labels(
+def add_datumaro_labels(
     sample_collection,
     label_field,
     labels_or_path,
-    categories,
-    label_type="detections",
-    coco_id_field=None,
+    label_categories,
+    label_types="detections",
     include_annotation_id=False,
-    extra_attrs=True,
+    ann_attrs=True,
+    item_attrs=True,
+    tag_attributes=["uuid"]
     use_polylines=False,
     tolerance=None,
 ):
@@ -129,16 +131,18 @@ def add_coco_labels(
             will be created if necessary
         labels_or_path: a list of COCO annotations or the path to a JSON file
             containing such data on disk
-        categories: can be any of the following:
+        label_categories: can be any of the following:
 
-            -   a list of category dicts in the format of
-                :meth:`parse_coco_categories` specifying the classes and their
-                category IDs
+            -   a list of labels dicts in the format of
+                :meth:`parse_datumaro_labels` specifying the classes and their
+                label IDs
             -   a dict mapping class IDs to class labels
             -   a list of class labels whose 1-based ordering is assumed to
-                correspond to the category IDs in the provided COCO labels
-        label_type ("detections"): the type of labels to load. Supported values
-            are ``("detections", "segmentations", "keypoints")``
+                correspond to the labels IDs in the provided datumaro labels
+        label_types (None): a label type or list of label types to load. The
+            supported values are
+            ``("classifications", "detections", "segmentations", "keypoints")``.
+            By default, all label types are loaded
         coco_id_field (None): this parameter determines how to map the
             predictions onto samples in ``sample_collection``. The supported
             values are:
@@ -166,99 +170,140 @@ def add_coco_labels(
     if etau.is_str(labels_or_path):
         labels = etas.load_json(labels_or_path)
         if isinstance(labels, dict):
-            labels = labels["annotations"]
+            labels = labels["items"]
     else:
         labels = labels_or_path
 
-    coco_objects_map = defaultdict(list)
-    for d in labels:
-        coco_obj = COCOObject.from_anno_dict(d, extra_attrs=extra_attrs)
-        coco_objects_map[coco_obj.image_id].append(coco_obj)
+    (
+        info,
+        classes_map,
+        items,
+        item_attributes,
+        annotations,
+    ) = _parse_datumaro_items(labels, ann_attrs=ann_attrs, item_attrs=item_attrs, tag_attributes=tag_attributes)
 
-    if coco_id_field is not None:
-        # Use `coco_id_field` as key to match predictions with samples
-        _coco_ids, _ids = sample_collection.values([coco_id_field, "id"])
-        id_map = {k: v for k, v in zip(_coco_ids, _ids)}
+    #if tag_attributes is not None:
+    #    tag = ["_".join(list(str(attributes.get[tag_attribute, "NN"]) for tag_attribute in tag_attributes))]
+    #else:
+    #    tag = []
 
-        coco_ids = sorted(coco_objects_map.keys())
-        bad_ids = set(coco_ids) - set(id_map.keys())
-        if bad_ids:
-            coco_ids = [_id for _id in coco_ids if _id not in bad_ids]
-            logger.warning(
-                "Ignoring %d labels with nonexistent COCO IDs (eg %s)",
-                len(bad_ids),
-                next(iter(bad_ids)),
-            )
+    datumaro_items_map = defaultdict(list)
+    for item_id, ann_dict in annotations.items():
+        datumaro_obj = DatumaroObject.from_anno_dict(ann_dict, ann_attrs=ann_attrs, tag_attributes=tag_attributes)
+        datumaro_items_map[item_id].append(datumaro_obj)
 
-        sample_ids = [id_map[coco_id] for coco_id in coco_ids]
-        view = sample_collection.select(sample_ids, ordered=True)
-        coco_objects = [coco_objects_map[coco_id] for coco_id in coco_ids]
-    else:
-        # Assume `image_id` is 1-based sample position
-        view = sample_collection
-        coco_objects = [coco_objects_map[i] for i in range(1, len(view) + 1)]
+    # Use field `item_id` as key to match labels with samples
+    item_ids_sample_collection = sample_collection.values(["item_id"])
+    #id_map = {k: v for k, v in zip(_coco_ids, _ids)}
 
-    view.compute_metadata()
-    widths, heights = view.values(["metadata.width", "metadata.height"])
+    item_ids = sorted(datumaro_items_map.keys())
+    bad_ids = set(item_ids) - set(item_ids_sample_collection)
+    if bad_ids:
+        item_ids = [_id for _id in item_ids if _id not in bad_ids]
+        logger.warning(
+            "Ignoring %d labels with nonexistent Item IDs (eg %s)",
+            len(bad_ids),
+            next(iter(bad_ids)),
+        )
 
-    if isinstance(categories, dict):
-        classes_map = categories
-    elif not categories:
+    #sample_ids = [id_map[coco_id] for coco_id in coco_ids]
+    view = sample_collection.select_by("item_id", item_ids, ordered=True)
+
+    # if there are labels in the json for items that are not in the dataset yet
+    datumaro_items = [datumaro_items_map[item_id] for item_id in item_ids]
+
+    # prepare inputs
+    if isinstance(label_categories, dict):
+        classes_map = label_categories
+    elif not label_categories:
         classes_map = {}
-    elif isinstance(categories[0], dict):
-        classes_map = {c["id"]: c["name"] for c in categories}
+    elif isinstance(label_categories[0], dict):
+        classes_map = parse_datumaro_label_categories(label_categories)
     else:
-        classes_map = {i: label for i, label in enumerate(categories, 1)}
+        classes_map = {i: label for i, label in enumerate(label_categories, 1)}
 
-    labels = []
-    for _coco_objects, width, height in zip(coco_objects, widths, heights):
+    _label_types = _parse_label_types(label_types)
+
+    if isinstance(label_field, dict):
+        label_key = lambda k: label_field.get(k, k)
+    elif label_field is not None:
+        label_key = lambda k: label_field + "_" + k
+    else:
+        label_field = "ground_truth"
+        label_key = lambda k: label_field + "_" + k
+
+    # iterate through samples with item_id
+    for item_id in item_ids:
+        sample_view = sample_collection.select_by("item_id", item_id, ordered=True)
+        sample_view.compute_metadata()
+
+        width, height = sample_view.values(["metadata.width", "metadata.height"])
         frame_size = (width, height)
+        
+        item_label = {}
+        datumaro_objects = datumaro_items_map[item_id]
 
-        if label_type == "detections":
-            _labels = _coco_objects_to_detections(
-                _coco_objects,
+        ## read item attributes into a seperate label of custom type "Item_attributes"
+        if item_attrs:
+            if item_attributes[item_id]:
+                item_label["item_attributes"] = Item_attributes.from_dict(item_attributes[item_id])
+
+        if "detections" in _label_types:
+            detections = _datumaro_objects_to_detections(
+                datumaro_objects,
                 frame_size,
                 classes_map,
-                None,
-                False,
-                include_annotation_id,
+                False,  # no segmentations
+                include_annotation_id
             )
-        elif label_type == "segmentations":
-            if use_polylines:
-                _labels = _coco_objects_to_polylines(
-                    _coco_objects,
+            if detections is not None:
+                item_label["detections"] = detections
+
+        if "segmentations" in _label_types:
+            if self.use_polylines:
+                segmentations = _coco_objects_to_polylines(
+                    coco_objects,
                     frame_size,
-                    classes_map,
-                    None,
-                    tolerance,
-                    include_annotation_id,
+                    self._classes_map,
+                    self._supercategory_map,
+                    self.tolerance,
+                    self.include_annotation_id,
                 )
             else:
-                _labels = _coco_objects_to_detections(
-                    _coco_objects,
+                segmentations = _datumaro_objects_to_detections(
+                    datumaro_objects,
                     frame_size,
                     classes_map,
-                    None,
-                    True,
+                    True,  # load segmentations
                     include_annotation_id,
                 )
-        elif label_type == "keypoints":
-            _labels = _coco_objects_to_keypoints(
-                _coco_objects,
-                frame_size,
-                classes_map,
-                None,
-                include_annotation_id,
-            )
+
+            if segmentations is not None:
+                item_label["segmentations"] = segmentations
+
         else:
             raise ValueError(
                 "Unsupported label_type='%s'. Supported values are %s"
                 % (label_type, ("detections", "segmentations", "keypoints"))
             )
 
-        labels.append(_labels)
+        if item_label:
+            for label_key, label_values in item_label.items():
+                full_label_field = label_key(key)
+                tag = label_values[0].tag
+                if overwrite_labels:
+                    filtered_sample_view = sample_view.filter_labels(full_label_field, F("tag") != tag)
+                    if sample_view[full_label_field]:
+                        sample_view[full_label_field] = filtered_sample_view + label_values
+                    else:
+                        sample_view[full_label_field] = label_values
+                else:
+                    if sample_view[full_label_field]:
+                        sample_view[full_label_field] = sample_view[full_label_field] + label_values
+                    else:
+                        sample_view[full_label_field] = label_values
 
-    view.set_values(label_field, labels)
+        sample_view.save()
 
 
 class DatumaroDatasetImporter(
@@ -368,7 +413,8 @@ class DatumaroDatasetImporter(
         seed=None,
         max_samples=None,
         tag_attributes=None,
-        read_metadata_from_file=False
+        read_metadata_from_file=False,
+        read_uuid_from_filename=False
     ):
         if dataset_dir is None and data_path is None and labels_path is None:
             raise ValueError(
@@ -414,6 +460,7 @@ class DatumaroDatasetImporter(
         self.tolerance = tolerance
         self.tag_attributes = tag_attributes
         self.read_metadata_from_file = read_metadata_from_file
+        self.read_uuid_from_filename = read_uuid_from_filename
 
         self._label_types = _label_types
         self._info = None
@@ -446,16 +493,21 @@ class DatumaroDatasetImporter(
         width = item_metadata.width
         height = item_metadata.height
 
-        label = {}
+        labels = {}
+        labels.update({"item_id": item_id})
+
+        # read uuid from filename
+        if self.read_uuid_from_filename:
+            labels.update({"uuid": "".join(filename.split(".")[:-1]).split("_")[-1]})
 
         # read metadata (like location, sensor settings, etc.) from file into seperate fields
         if self.read_metadata_from_file:
-            label.update(read_metadata_from_image_file(item_path))
+            labels.update(read_metadata_from_image_file(item_path))
 
         ## read item attributes into a seperate label of custom type "Item_attributes"
         if self.item_attrs:
             if self._item_attributes[item_id]:
-                label["item_attributes"] = Item_attributes.from_dict(self._item_attributes[item_id])
+                labels["item_attributes"] = Item_attributes.from_dict(self._item_attributes[item_id])
 
         if self._annotations is not None:
             datumaro_objects = self._annotations.get(item_id, [])
@@ -475,7 +527,7 @@ class DatumaroDatasetImporter(
                     self.include_annotation_id
                 )
                 if detections is not None:
-                    label["detections"] = detections
+                    labels["detections"] = detections
 
             if "segmentations" in self._label_types:
                 if self.use_polylines:
@@ -497,7 +549,7 @@ class DatumaroDatasetImporter(
                     )
 
                 if segmentations is not None:
-                    label["segmentations"] = segmentations
+                    labels["segmentations"] = segmentations
 
             if "keypoints" in self._label_types:
                 keypoints = _coco_objects_to_keypoints(
@@ -509,15 +561,12 @@ class DatumaroDatasetImporter(
                 )
 
                 if keypoints is not None:
-                    label["keypoints"] = keypoints
-
-        if not label:
-            label = None
+                    labels["keypoints"] = keypoints
 
         if self._has_scalar_labels:
-            label = next(iter(label.values())) if label else None
+            labels = next(iter(labels.values())) if labels else None
 
-        return item_path, item_metadata, label
+        return item_path, item_metadata, labels
 
     @property
     def has_dataset_info(self):
@@ -1519,8 +1568,8 @@ def _parse_datumaro_items(d, ann_attrs=True, item_attrs=True, tag_attributes=Non
     return info, classes_map, items, item_attributes, annotations
 
 
-def parse_datumaro_labels(labels):
-    """Parses the Datumaro labels list.
+def parse_datumaro_label_categories(labels):
+    """Parses the Datumaro categories labels list.
 
     Args:
         labels: a list of dict of the form::
@@ -2094,7 +2143,7 @@ def _get_matching_objects(datumaro_objects, class_ids):
 
 
 def _parse_categories(categories, classes=None):
-    classes_map, _ = parse_coco_categories(categories)
+    classes_map, _ = parse_datumaro_labels(categories)
 
     if classes is None:
         return {c: i for i, c in classes_map.items()}
