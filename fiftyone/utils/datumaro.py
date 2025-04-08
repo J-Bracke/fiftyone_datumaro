@@ -51,35 +51,35 @@ def add_datumaro_labels(
     include_annotation_id=False,
     ann_attrs=True,
     item_attrs=True,
-    tag_attributes=["uuid"]
+    tag_attributes=["uuid"],
     use_polylines=False,
     tolerance=None,
+    overwrite_labels=True
 ):
-    """Adds the given COCO labels to the collection.
+    """Adds the given datumaro labels to the collection.
 
     The ``labels_or_path`` argument can be any of the following:
 
-    -   a list of COCO annotations in the format below
-    -   the path to a JSON file containing a list of COCO annotations
+    -   a list of datumaro annotations in the format below
+    -   the path to a JSON file containing a list of datumaro annotations
     -   the path to a JSON file whose ``"annotations"`` key contains a list of
-        COCO annotations
+        datumaro annotations
 
     When ``label_type="detections"``, the labels should have format::
 
         [
             {
                 "id": 1,
-                "image_id": 1,
-                "category_id": 1,
+                "type": "bbox",
+                "label_id": 1,
                 "bbox": [260, 177, 231, 199],
 
                 # optional
-                "score": 0.95,
-                "area": 45969,
-                "iscrowd": 0,
+                "group": 1,
+                "z_order": 2,
 
                 # extra attrs
-                ...
+                attributes = {}
             },
             ...
         ]
@@ -89,18 +89,18 @@ def add_datumaro_labels(
         [
             {
                 "id": 1,
-                "image_id": 1,
-                "category_id": 1,
-                "bbox": [260, 177, 231, 199],
-                "segmentation": [...],
+                "type": "mask",
+                "label_id": 1,
+                "rle": {
+                    "counts": "ncdfas34fc42000",
+                    "size": [ 1536, 2048]},
 
                 # optional
-                "score": 0.95,
-                "area": 45969,
-                "iscrowd": 0,
+                "group": 1,
+                "z_order": 2,
 
                 # extra attrs
-                ...
+                attributes = {}
             },
             ...
         ]
@@ -110,31 +110,41 @@ def add_datumaro_labels(
         [
             {
                 "id": 1,
-                "image_id": 1,
-                "category_id": 1,
-                "keypoints": [224, 226, 2, ...],
-                "num_keypoints": 10,
+                "type": "points",
+                "label_id": 1,
+                "points": [260, 177, 231, 199],
+
+                # optional
+                "group": 1,
+                "z_order": 2,
+                "visibility": 2,
 
                 # extra attrs
-                ...
+                attributes = {}
             },
             ...
         ]
 
-    See `this page <https://cocodataset.org/#format-data>`_ for more
-    information about the COCO data format.
+    See `this page <https://open-edge-platform.github.io/datumaro/latest/docs/data-formats/formats/datumaro.html>`_ for more
+    information about the datumaro data format.
 
     Args:
         sample_collection: a
             :class:`fiftyone.core.collections.SampleCollection`
-        label_field: the label field in which to store the labels. The field
-            will be created if necessary
-        labels_or_path: a list of COCO annotations or the path to a JSON file
+        label_field: controls the field(s) in which imported labels are
+            stored. If the importer produces a
+            single :class:`fiftyone.core.labels.Label` instance per
+            sample/frame, this argument specifies the string prefix of the field to use;
+            the default is ``"ground_truth"``. If the importer produces a
+            dictionary of labels per sample, this argument can be either a
+            string prefix to prepend to each label key or a dict mapping label
+            keys to field names; the default in this case is to directly use
+            the keys of the imported label dictionaries as field names
+        labels_or_path: a list of datumaro annotations or the path to a JSON file
             containing such data on disk
         label_categories: can be any of the following:
-
             -   a list of labels dicts in the format of
-                :meth:`parse_datumaro_labels` specifying the classes and their
+                :meth:`parse_datumaro_label_categories` specifying the classes and their
                 label IDs
             -   a dict mapping class IDs to class labels
             -   a list of class labels whose 1-based ordering is assumed to
@@ -143,21 +153,10 @@ def add_datumaro_labels(
             supported values are
             ``("classifications", "detections", "segmentations", "keypoints")``.
             By default, all label types are loaded
-        coco_id_field (None): this parameter determines how to map the
-            predictions onto samples in ``sample_collection``. The supported
-            values are:
-
-            -   ``None`` (default): in this case, the ``image_id`` of the
-                predictions are assumed to be the 1-based positional indexes of
-                samples in ``sample_collection``
-            -   the name of a field of ``sample_collection`` containing the
-                COCO IDs for the samples that correspond to the ``image_id`` of
-                the predictions
-        include_annotation_id (False): whether to include the COCO ID of each
+        include_annotation_id (False): whether to include the ID of each
             annotation in the loaded labels
         extra_attrs (True): whether to load extra annotation attributes onto
             the imported labels. Supported values are:
-
             -   ``True``: load all extra attributes found
             -   ``False``: do not load extra attributes
             -   a name or list of names of specific attributes to load
@@ -166,6 +165,8 @@ def add_datumaro_labels(
             :class:`fiftyone.core.labels.Detections` with dense masks
         tolerance (None): a tolerance, in pixels, when generating approximate
             polylines for instance masks. Typical values are 1-3 pixels
+        overwrite_labels (True): whether existing labels with the same tag for all items
+            specified in the datumaro annotations should be deleted and replaced by the new added labels
     """
     if etau.is_str(labels_or_path):
         labels = etas.load_json(labels_or_path)
@@ -175,17 +176,10 @@ def add_datumaro_labels(
         labels = labels_or_path
 
     (
-        info,
-        classes_map,
         items,
         item_attributes,
         annotations,
     ) = _parse_datumaro_items(labels, ann_attrs=ann_attrs, item_attrs=item_attrs, tag_attributes=tag_attributes)
-
-    #if tag_attributes is not None:
-    #    tag = ["_".join(list(str(attributes.get[tag_attribute, "NN"]) for tag_attribute in tag_attributes))]
-    #else:
-    #    tag = []
 
     datumaro_items_map = defaultdict(list)
     for item_id, ann_dict in annotations.items():
@@ -194,7 +188,6 @@ def add_datumaro_labels(
 
     # Use field `item_id` as key to match labels with samples
     item_ids_sample_collection = sample_collection.values(["item_id"])
-    #id_map = {k: v for k, v in zip(_coco_ids, _ids)}
 
     item_ids = sorted(datumaro_items_map.keys())
     bad_ids = set(item_ids) - set(item_ids_sample_collection)
@@ -205,12 +198,6 @@ def add_datumaro_labels(
             len(bad_ids),
             next(iter(bad_ids)),
         )
-
-    #sample_ids = [id_map[coco_id] for coco_id in coco_ids]
-    view = sample_collection.select_by("item_id", item_ids, ordered=True)
-
-    # if there are labels in the json for items that are not in the dataset yet
-    datumaro_items = [datumaro_items_map[item_id] for item_id in item_ids]
 
     # prepare inputs
     if isinstance(label_categories, dict):
@@ -225,12 +212,12 @@ def add_datumaro_labels(
     _label_types = _parse_label_types(label_types)
 
     if isinstance(label_field, dict):
-        label_key = lambda k: label_field.get(k, k)
+        label_field_key = lambda k: label_field.get(k, k)
     elif label_field is not None:
-        label_key = lambda k: label_field + "_" + k
+        label_field_key = lambda k: label_field + "_" + k
     else:
         label_field = "ground_truth"
-        label_key = lambda k: label_field + "_" + k
+        label_field_key = lambda k: label_field + "_" + k
 
     # iterate through samples with item_id
     for item_id in item_ids:
@@ -260,14 +247,13 @@ def add_datumaro_labels(
                 item_label["detections"] = detections
 
         if "segmentations" in _label_types:
-            if self.use_polylines:
-                segmentations = _coco_objects_to_polylines(
-                    coco_objects,
+            if use_polylines:
+                segmentations = _datumaro_objects_to_detections(
+                    datumaro_objects,
                     frame_size,
-                    self._classes_map,
-                    self._supercategory_map,
-                    self.tolerance,
-                    self.include_annotation_id,
+                    classes_map,
+                    tolerance,
+                    include_annotation_id
                 )
             else:
                 segmentations = _datumaro_objects_to_detections(
@@ -275,21 +261,36 @@ def add_datumaro_labels(
                     frame_size,
                     classes_map,
                     True,  # load segmentations
-                    include_annotation_id,
+                    include_annotation_id
                 )
 
             if segmentations is not None:
                 item_label["segmentations"] = segmentations
 
-        else:
-            raise ValueError(
-                "Unsupported label_type='%s'. Supported values are %s"
-                % (label_type, ("detections", "segmentations", "keypoints"))
+        if "keypoints" in _label_types:
+            keypoints = _datumaro_objects_to_keypoints(
+                datumaro_objects,
+                frame_size,
+                classes_map,
+                include_annotation_id,
             )
+
+            if keypoints is not None:
+                labels["keypoints"] = keypoints
+
+        if "classifications" in _label_types:
+            classifications = _datumaro_objects_to_classifications(
+                datumaro_objects,
+                classes_map,
+                include_annotation_id,
+            )
+
+            if classifications is not None:
+                labels["classifications"] = classifications
 
         if item_label:
             for label_key, label_values in item_label.items():
-                full_label_field = label_key(key)
+                full_label_field = label_field_key(label_key)
                 tag = label_values[0].tag
                 if overwrite_labels:
                     filtered_sample_view = sample_view.filter_labels(full_label_field, F("tag") != tag)
@@ -357,9 +358,7 @@ class DatumaroDatasetImporter(
             -   the path to a text (newline-separated), JSON, or CSV file
                 containing the list of item IDs to load in either of the first
                 two formats
-        include_id (False): whether to include the datumaro item ID of each sample in
-            the loaded labels
-        include_annotation_id (False): whether to include the datumaro ID of each
+        include_annotation_id (False): whether to include the ID of each
             annotation in the loaded labels
         ann_attrs (True): whether to load annotation attributes onto
             the imported labels. Supported values are:
@@ -392,6 +391,10 @@ class DatumaroDatasetImporter(
             number of samples loaded may be less than this maximum value if the
             dataset does not contain sufficient samples matching your
             requirements. By default, all matching samples are loaded
+        read_metadata_from_file (False): whether to load metadata informations that are
+            stored in the .png-file in the tEXT format and store them as additional labels
+        read_uuid_from_filename (False): whether to read the uuid from the filename
+            and store them as an additional annotation attribute
     """
 
     def __init__(
@@ -402,7 +405,6 @@ class DatumaroDatasetImporter(
         label_types=None,
         classes=None,
         item_ids=None,
-        include_id=False,
         include_annotation_id=False,
         ann_attrs=True,
         item_attrs=True,
@@ -436,9 +438,6 @@ class DatumaroDatasetImporter(
 
         _label_types = _parse_label_types(label_types)
 
-        if include_id:
-            _label_types.append("datumaro_item_id")
-
         super().__init__(
             dataset_dir=dataset_dir,
             shuffle=shuffle,
@@ -451,7 +450,6 @@ class DatumaroDatasetImporter(
         self.label_types = label_types
         self.classes = classes
         self.item_ids = item_ids
-        self.include_id = include_id
         self.include_annotation_id = include_annotation_id
         self.ann_attrs = ann_attrs
         self.item_attrs = item_attrs
@@ -531,11 +529,10 @@ class DatumaroDatasetImporter(
 
             if "segmentations" in self._label_types:
                 if self.use_polylines:
-                    segmentations = _coco_objects_to_polylines(
-                        coco_objects,
+                    segmentations = _datumaro_objects_to_polylines(
+                        datumaro_objects,
                         frame_size,
                         self._classes_map,
-                        self._supercategory_map,
                         self.tolerance,
                         self.include_annotation_id,
                     )
@@ -552,16 +549,28 @@ class DatumaroDatasetImporter(
                     labels["segmentations"] = segmentations
 
             if "keypoints" in self._label_types:
-                keypoints = _coco_objects_to_keypoints(
-                    coco_objects,
+                keypoints = _datumaro_objects_to_keypoints(
+                    datumaro_objects,
                     frame_size,
                     self._classes_map,
-                    self._supercategory_map,
                     self.include_annotation_id,
                 )
 
                 if keypoints is not None:
                     labels["keypoints"] = keypoints
+
+            if "classifications" in self._label_types:
+                classifications = _datumaro_objects_to_classifications(
+                    datumaro_objects,
+                    self._classes_map,
+                    self.include_annotation_id,
+                )
+
+                if classifications is not None:
+                    labels["classifications"] = classifications
+
+            if "datumaro_item_id" in self._label_types:
+                labels["datumaro_item_id"] = item_id
 
         if self._has_scalar_labels:
             labels = next(iter(labels.values())) if labels else None
@@ -588,7 +597,7 @@ class DatumaroDatasetImporter(
             "detections": fol.Detections,
             "segmentations": seg_type,
             "keypoints": fol.Keypoints,
-            "datumaro_item_id": fof.IntField
+            "item_attributes": Item_attributes
         }
 
         if self._has_scalar_labels:
@@ -659,12 +668,12 @@ class DatumaroDatasetImporter(
         return self._info
 
 
-class COCODetectionDatasetExporter(
+class DatumaroDatasetExporter(
     foud.LabeledImageDatasetExporter, foud.ExportPathsMixin
 ):
-    """Exporter that writes COCO detection datasets to disk.
+    """Exporter that writes Datumaro datasets to disk.
 
-    See :ref:`this page <COCODetectionDataset-export>` for format details.
+    See :ref:`this page <DatumaroDataset-import>` for format details.
 
     Args:
         export_dir (None): the directory to write the export. This has no
@@ -672,7 +681,6 @@ class COCODetectionDatasetExporter(
         data_path (None): an optional parameter that enables explicit control
             over the location of the exported media. Can be any of the
             following:
-
             -   a folder name like ``"data"`` or ``"data/"`` specifying a
                 subfolder of ``export_dir`` in which to export the media
             -   an absolute directory path in which to export the media. In
@@ -684,24 +692,20 @@ class COCODetectionDatasetExporter(
             -   an absolute filepath specifying the location to write the JSON
                 manifest file when ``export_media`` is ``"manifest"``. In this
                 case, ``export_dir`` has no effect on the location of the data
-
             If None, the default value of this parameter will be chosen based
             on the value of the ``export_media`` parameter
         labels_path (None): an optional parameter that enables explicit control
             over the location of the exported labels. Can be any of the
             following:
-
             -   a filename like ``"labels.json"`` specifying the location in
                 ``export_dir`` in which to export the labels
             -   an absolute filepath to which to export the labels. In this
                 case, the ``export_dir`` has no effect on the location of the
                 labels
-
             If None, the labels will be exported into ``export_dir`` using the
             default filename
         export_media (None): controls how to export the raw media. The
             supported values are:
-
             -   ``True``: copy all media files into the output directory
             -   ``False``: don't export media
             -   ``"move"``: move all media files into the output directory
@@ -710,7 +714,6 @@ class COCODetectionDatasetExporter(
             -   ``"manifest"``: create a ``data.json`` in the output directory
                 that maps UUIDs used in the labels files to the filepaths of
                 the source media, rather than exporting the actual media
-
             If None, the default value of this parameter will be chosen based
             on the value of the ``data_path`` parameter
         rel_dir (None): an optional relative directory to strip from each input
@@ -726,26 +729,22 @@ class COCODetectionDatasetExporter(
             images to disk. By default, ``fiftyone.config.default_image_ext``
             is used
         classes (None): the list of possible class labels
-        categories (None): a list of category dicts in the format of
-            :meth:`parse_coco_categories` specifying the classes and their
-            category IDs
+        label_categories (None): a list of label category dicts in the format of
+            :meth:`parse_datumaro_label_categories` specifying the classes and their
+            label IDs
         info (None): a dict of info as returned by
-            :meth:`load_coco_detection_annotations` to include in the exported
+            :meth:`load_datumaro_items` to include in the exported
             JSON. If not provided, this info will be extracted when
             :meth:`log_collection` is called, if possible
         extra_attrs (True): whether to include extra object attributes in the
             exported labels. Supported values are:
-
             -   ``True``: export all extra attributes found
             -   ``False``: do not export extra attributes
             -   a name or list of names of specific attributes to export
-        coco_id (None): the name of a sample field containing the COCO IDs of
-            each image
+        ####coco_id (None): the name of a sample field containing the COCO IDs of
+            each image####
         annotation_id (None): the name of a label field containing the COCO
             annotation ID of each label
-        iscrowd ("iscrowd"): the name of a detection attribute that indicates
-            whether an object is a crowd (the value is automatically set to 0
-            if the attribute is not present)
         num_decimals (None): an optional number of decimal places at which to
             round bounding box pixel coordinates. By default, no rounding is
             done
@@ -763,12 +762,11 @@ class COCODetectionDatasetExporter(
         abs_paths=False,
         image_format=None,
         classes=None,
-        categories=None,
+        label_categories=None,
         info=None,
         extra_attrs=True,
         coco_id=None,
         annotation_id=None,
-        iscrowd="iscrowd",
         num_decimals=None,
         tolerance=None,
     ):
@@ -776,13 +774,13 @@ class COCODetectionDatasetExporter(
             export_dir=export_dir,
             data_path=data_path,
             export_media=export_media,
-            default="data/",
+            default="images/default/",
         )
 
         labels_path = self._parse_labels_path(
             export_dir=export_dir,
             labels_path=labels_path,
-            default="labels.json",
+            default="/annotations/default.json",
         )
 
         super().__init__(export_dir=export_dir)
@@ -794,12 +792,11 @@ class COCODetectionDatasetExporter(
         self.abs_paths = abs_paths
         self.image_format = image_format
         self.classes = classes
-        self.categories = categories
+        self.label_categories = label_categories
         self.info = info
         self.extra_attrs = extra_attrs
         self.coco_id = coco_id
         self.annotation_id = annotation_id
-        self.iscrowd = iscrowd
         self.num_decimals = num_decimals
         self.tolerance = tolerance
 
@@ -820,7 +817,7 @@ class COCODetectionDatasetExporter(
 
     @property
     def label_cls(self):
-        return (fol.Detections, fol.Polylines, fol.Keypoints)
+        return (fol.Detections, fol.Polylines, fol.Keypoints, fol.Classifications, Item_attributes)
 
     def setup(self):
         self._image_id = 0
@@ -874,6 +871,7 @@ class COCODetectionDatasetExporter(
             self._image_id += 1
             image_id = self._image_id
 
+        ## not needed for datumaro
         self._images.append(
             {
                 "id": image_id,
@@ -885,6 +883,7 @@ class COCODetectionDatasetExporter(
             }
         )
 
+        ## return only images with labels or not?
         if label is None:
             return
 
@@ -987,8 +986,8 @@ class COCODetectionDatasetExporter(
 
     def _parse_classes(self):
         if self.categories is not None:
-            self._labels_map_rev = _parse_categories(
-                self.categories, classes=self.classes
+            self._labels_map_rev = _parse_label_categories(
+                self.label_categories, classes=self.classes
             )
             self._dynamic_classes = False
         elif self.classes is None:
@@ -1028,9 +1027,9 @@ class DatumaroObject(object):
         type=None,
         label_id=None,
         attributes=None,
-        z_order=None,
-        group=None,
-        visibility=None,
+        z_order=0,
+        group=0,
+        visibility=[0],
         rle=None,
         points=None,
         bbox=None,
@@ -1055,7 +1054,6 @@ class DatumaroObject(object):
         self,
         frame_size,
         classes_map=None,
-        supercategory_map=None,
         tolerance=None,
         include_id=False,
     ):
@@ -1065,36 +1063,64 @@ class DatumaroObject(object):
         Args:
             frame_size: the ``(width, height)`` of the image
             classes_map (None): a dict mapping class IDs to class labels
-            supercategory_map (None): a dict mapping class names to category
-                dicts
             tolerance (None): a tolerance, in pixels, when generating
                 approximate polylines for instance masks. Typical values are
                 1-3 pixels
-            include_id (False): whether to include the COCO ID of the object as
+            include_id (False): whether to include the ID of the object as
                 a label attribute
 
         Returns:
             a :class:`fiftyone.core.labels.Polyline`, or None if no
             segmentation data is available
         """
-        if not self.segmentation:
+        if not self.rle:
             return None
 
         label, attributes = self._get_object_label_and_attributes(
-            classes_map, supercategory_map, include_id
+            classes_map, include_id
         )
         attributes.update(self.attributes)
+        attributes.update(self.z_order, self.group)
 
         points = _get_polygons_for_segmentation(
-            self.segmentation, frame_size, tolerance
+            self.rle, frame_size, tolerance
         )
 
         return fol.Polyline(
             label=label,
             points=points,
-            confidence=self.score,
             closed=False,
             filled=True,
+            tags=self.tag,
+            **attributes,
+        )
+
+    def to_classification(
+        self,
+        classes_map=None,
+        include_id=False
+    ):
+        """Returns a :class:`fiftyone.core.labels.Classification` representation of
+        the object.
+
+        Args:
+            classes_map (None): a dict mapping class IDs to class labels
+            include_id (False): whether to include the ID of the object as
+                a label attribute
+
+        Returns:
+            a :class:`fiftyone.core.labels.Classification`
+        """
+
+        label, attributes = self._get_object_label_and_attributes(
+            classes_map, include_id
+        )
+        attributes.update(self.attributes)
+        attributes.update(self.z_order, self.group)
+
+        return fol.Classification(
+            label=label,
+            tags=self.tag,
             **attributes,
         )
 
@@ -1102,7 +1128,6 @@ class DatumaroObject(object):
         self,
         frame_size,
         classes_map=None,
-        supercategory_map=None,
         include_id=False,
     ):
         """Returns a :class:`fiftyone.core.labels.Keypoint` representation of
@@ -1111,43 +1136,30 @@ class DatumaroObject(object):
         Args:
             frame_size: the ``(width, height)`` of the image
             classes_map (None): a dict mapping class IDs to class labels
-            supercategory_map (None): a dict mapping class names to category
-                dicts
-            include_id (False): whether to include the COCO ID of the object as
+            include_id (False): whether to include the ID of the object as
                 a label attribute
 
         Returns:
             a :class:`fiftyone.core.labels.Keypoint`, or None if no keypoints
             data is available
         """
-        if self.keypoints is None:
+        if self.points is None:
             return None
 
         label, attributes = self._get_object_label_and_attributes(
-            classes_map, supercategory_map, include_id
+            classes_map, include_id
         )
         attributes.update(self.attributes)
+        attributes.update(self.z_order, self.group, self.visibility)
 
         width, height = frame_size
 
         points = []
-        visible = []
-        for x, y, v in fou.iter_batches(self.keypoints, 3):
-            if v == 0:
-                points.append((float("nan"), float("nan")))
-            else:
+        for x, y in fou.iter_batches(self.points, 2):
                 points.append((x / width, y / height))
 
-            visible.append(v)
-        if "visible" in attributes:
-            logger.debug(
-                "Found a custom attribute named 'visible' which is a "
-                "reserved name. Ignoring the custom attribute"
-            )
-            attributes.pop("visible")
-
         return fol.Keypoint(
-            label=label, points=points, visible=visible, **attributes
+            label=label, points=points, **attributes
         )
 
     def to_detection(
@@ -1165,7 +1177,7 @@ class DatumaroObject(object):
             classes_map (None): a dict mapping class IDs to class labels
             load_segmentation (False): whether to load the segmentation mask
                 for the object, if available
-            include_id (False): whether to include the Datumaro ID of the object as
+            include_id (False): whether to include the ID of the object as
                 a label attribute
 
         Returns:
@@ -1182,13 +1194,14 @@ class DatumaroObject(object):
             classes_map, include_id
         )
         attributes.update(self.attributes)
+        attributes.update(self.z_order, self.group)
 
         width, height = frame_size
         x, y, w, h = self.bbox
         bounding_box = [x / width, y / height, w / width, h / height]
 
         if load_segmentation and self.rle:
-            mask = _coco_segmentation_to_mask(
+            mask = _datumaro_segmentation_to_mask(
                 self.rle, self.bbox, frame_size
             )
         else:
@@ -1254,7 +1267,6 @@ class DatumaroObject(object):
         Returns:
             a :class:`DatumaroObject`
         """
-        # Handles CVAT exported attributes
         if ann_attrs is True:
             attributes = d.get("attributes", {})
         else:
@@ -1285,115 +1297,106 @@ class DatumaroObject(object):
         cls,
         label,
         metadata,
-        image_id=None,
-        category_id=None,
-        keypoint=None,
+        label_id=None,
         extra_attrs=True,
         id_attr=None,
-        iscrowd="iscrowd",
         num_decimals=None,
-        tolerance=None,
+        treat_polyline_as_segmentation=None
     ):
-        """Creates a :class:`COCOObject` from a compatible
+        """Creates a :class:`DatumaroObject` from a compatible
         :class:`fiftyone.core.labels.Label`.
 
         Args:
             label: a :class:`fiftyone.core.labels.Detection`,
-                :class:`fiftyone.core.labels.Polyline`, or
+                :class:`fiftyone.core.labels.Polyline`,
+                :class:`fiftyone.core.labels.Classification` or
                 :class:`fiftyone.core.labels.Keypoint`
             metadata: a :class:`fiftyone.core.metadata.ImageMetadata` for the
                 image
-            image_id (None): an image ID
-            category_id (None): the category ID for the object
-            keypoint (None): an optional :class:`fiftyone.core.labels.Keypoint`
-                containing keypoints to include for the object
+            label_id (None): the label ID for the object
             extra_attrs (True): whether to include extra attributes from the
                 object. Supported values are:
-
                 -   ``True``: include all extra attributes found
                 -   ``False``: do not include extra attributes
                 -   a name or list of names of specific attributes to include
             id_attr (None): the name of the attribute containing the annotation
                 ID of the label, if any
-            iscrowd ("iscrowd"): the name of the crowd attribute (the value is
-                automatically set to 0 if the attribute is not present)
             num_decimals (None): an optional number of decimal places at which
                 to round bounding box pixel coordinates. By default, no
                 rounding is done
-            tolerance (None): a tolerance, in pixels, when generating
-                approximate polylines for instance masks. Typical values are
-                1-3 pixels
-
+            treat_polyline_as_segmentation (None): whether to convert a polygon into a mask
+                
         Returns:
-            a :class:`COCOObject`
+            a :class:`DatumaroObject`
         """
         width = metadata.width
         height = metadata.height
         frame_size = (width, height)
 
         bbox = None
-        segmentation = None
-        keypoints = None
-        area = None
+        rle = None
+        points = None
+        attributes = {}
+        visibility = [0]
 
         if isinstance(label, fol.Detection):
             x, y, w, h = label.bounding_box
             bbox = [x * width, y * height, w * width, h * height]
+            type = "bbox"
 
             if label.has_mask:
-                segmentation = _instance_to_coco_segmentation(
-                    label, frame_size, iscrowd=iscrowd, tolerance=tolerance
+                rle = _instance_to_datumaro_segmentation(
+                    label, frame_size
                 )
+                type = "mask"
         elif isinstance(label, fol.Polyline):
-            points = np.concatenate(label.points, axis=0)
-            x, y = points.min(axis=0)
-            xmax, ymax = points.max(axis=0)
-            w, h = xmax - x, ymax - y
-            bbox = [x * width, y * height, w * width, h * height]
+            if treat_polyline_as_segmentation:
+                rle = _polyline_to_datumaro_segmentation(
+                    label, frame_size
+                )
+                type = "mask"
+            else:
+                points = np.concatenate(label.points, axis=0)
+                type = "polygon"
 
-            segmentation = _polyline_to_coco_segmentation(
-                label, frame_size, iscrowd=iscrowd
-            )
+        elif isinstance(label, fol.Classification):
+            type="label"
+            
         elif isinstance(label, fol.Keypoint):
-            keypoints = _make_coco_keypoints(label, frame_size)
+            points = label.points
+            num_points = len(points)
+            visibility = [None] * num_points
+            type="points"
+
         else:
             raise ValueError("Unsupported label type %s" % type(label))
-
-        if keypoint is not None:
-            keypoints = _make_coco_keypoints(keypoint, frame_size)
-
-        confidence = label.confidence
 
         if bbox is not None:
             if num_decimals is not None:
                 bbox = [round(p, num_decimals) for p in bbox]
 
-            area = bbox[2] * bbox[3]
-
         if id_attr is not None:
-            _id = label.get_attribute_value(id_attr, None)
+            _id = label.get_attribute_value(id_attr, 0)
         else:
-            _id = None
-
-        _iscrowd = int(label.get_attribute_value(iscrowd, None) or 0)
+            _id = 0
 
         attributes = _get_attributes(label, extra_attrs)
         attributes.pop(id_attr, None)  # okay if `id_attr` is None
-        attributes.pop(iscrowd, None)
-        attributes.pop("area", None)
-        attributes.pop("visible", None)
+        z_order = attributes.pop(z_order, 0)
+        group = attributes.pop(group, 0)
+        attributes.pop(visibility, [0])
 
         return cls(
             id=_id,
-            image_id=image_id,
-            category_id=category_id,
+            type=type,
+            label_id=label_id,
+            attributes=attributes,
             bbox=bbox,
-            segmentation=segmentation,
-            keypoints=keypoints,
-            score=confidence,
-            area=area,
-            iscrowd=_iscrowd,
-            **attributes,
+            rle=rle,
+            points=points,
+            z_order = z_order,
+            group = group,
+            visibility = visibility
         )
 
     def _get_label(self, classes):
@@ -1412,8 +1415,8 @@ class DatumaroObject(object):
 
         attributes = {}
 
-        if include_id:
-            attributes["datumaro_item_id"] = self.id
+        if self.include_id:
+            attributes["annotation_id"] = self.id
 
         return label, attributes
 
@@ -1422,6 +1425,7 @@ class Item_attributes(fol._HasID, fol.Label):
     """
     
     """
+    tags = []
 
 
 def read_metadata_from_image_file(image_path: str) -> dict:
@@ -1505,19 +1509,14 @@ def load_datumaro_items(json_path, ann_attrs=True, item_attrs=True, tag_attribut
         -   info: a dict of dataset info
         -   classes_map: a dict mapping label IDs to labels
         -   items: a list of item IDs of all items contained in the JSON file
-        -   image_attr: a dict mapping item IDs to a dict of image_attr or ``None``
+        -   item_attributes: a dict mapping item IDs to a dict of item_attributes or ``None``
         -   annotations: a dict mapping item IDs to list of
             :class:`DatumaroObject` instances, or ``None`` for unlabeled datasets
     """
-    d = etas.load_json(json_path)
-    return _parse_datumaro_items(d, ann_attrs=ann_attrs, item_attrs=item_attrs)
+    datumaro_json = etas.load_json(json_path)
 
-
-def _parse_datumaro_items(d, ann_attrs=True, item_attrs=True, tag_attributes=None):
-    # Load info
-    info = d.get("info", None)
-    categories = d.get("categories", None)
-
+    info = datumaro_json.get("info", None)
+    categories = datumaro_json.get("categories", None)
     if info is None:
         info = {}
 
@@ -1526,11 +1525,18 @@ def _parse_datumaro_items(d, ann_attrs=True, item_attrs=True, tag_attributes=Non
 
     # Load classes
     if categories is not None:
-        classes_map = parse_datumaro_labels(categories)
+        classes_map = parse_datumaro_label_categories(categories)
     else:
         classes_map = None
 
-    # Load items and image attributes
+    items, item_attributes, annotations = _parse_datumaro_items(datumaro_json["items"], ann_attrs=ann_attrs, item_attrs=item_attrs,
+                                                                tag_attributes=tag_attributes)
+
+    return info, classes_map, items, item_attributes, annotations
+
+
+def _parse_datumaro_items(d, ann_attrs=True, item_attrs=True, tag_attributes=None):
+    # Load items and annotation attributes
     _items = d.get("items", None)
     items = []
     if _items is not None:
@@ -1565,7 +1571,7 @@ def _parse_datumaro_items(d, ann_attrs=True, item_attrs=True, tag_attributes=Non
         annotations = None
         item_attributes = None
 
-    return info, classes_map, items, item_attributes, annotations
+    return items, item_attributes, annotations
 
 
 def parse_datumaro_label_categories(labels):
@@ -1592,322 +1598,6 @@ def parse_datumaro_label_categories(labels):
     }
 
     return classes_map
-
-
-def download_coco_dataset_split(
-    dataset_dir,
-    split,
-    year="2017",
-    label_types=None,
-    classes=None,
-    image_ids=None,
-    num_workers=None,
-    shuffle=None,
-    seed=None,
-    max_samples=None,
-    raw_dir=None,
-    scratch_dir=None,
-):
-    """Utility that downloads full or partial splits of the
-    `COCO dataset <https://cocodataset.org>`_.
-
-    See :ref:`this page <COCODetectionDataset-export>` for the format in which
-    ``dataset_dir`` will be arranged.
-
-    Any existing files are not re-downloaded.
-
-    Args:
-        dataset_dir: the directory to download the dataset
-        split: the split to download. Supported values are
-            ``("train", "validation", "test")``
-        year ("2017"): the dataset year to download. Supported values are
-            ``("2014", "2017")``
-        label_types (None): a label type or list of label types to load. The
-            supported values are ``("detections", "segmentations")``. By
-            default, all label types are loaded
-        classes (None): a string or list of strings specifying required classes
-            to load. Only samples containing at least one instance of a
-            specified class will be loaded
-        image_ids (None): an optional list of specific image IDs to load. Can
-            be provided in any of the following formats:
-
-            -   a list of ``<image-id>`` ints or strings
-            -   a list of ``<split>/<image-id>`` strings
-            -   the path to a text (newline-separated), JSON, or CSV file
-                containing the list of image IDs to load in either of the first
-                two formats
-        num_workers (None): a suggested number of threads to use when
-            downloading individual images
-        shuffle (False): whether to randomly shuffle the order in which samples
-            are chosen for partial downloads
-        seed (None): a random seed to use when shuffling
-        max_samples (None): a maximum number of samples to load. If
-            ``label_types`` and/or ``classes`` are also specified, first
-            priority will be given to samples that contain all of the specified
-            label types and/or classes, followed by samples that contain at
-            least one of the specified labels types or classes. The actual
-            number of samples loaded may be less than this maximum value if the
-            dataset does not contain sufficient samples matching your
-            requirements. By default, all matching samples are loaded
-        raw_dir (None): a directory in which full annotations files may be
-            stored to avoid re-downloads in the future
-        scratch_dir (None): a scratch directory to use to download any
-            necessary temporary files
-
-    Returns:
-        a tuple of:
-
-        -   num_samples: the total number of downloaded images
-        -   classes: the list of all classes
-        -   did_download: whether any content was downloaded (True) or if all
-            necessary files were already downloaded (False)
-    """
-    if year not in _IMAGE_DOWNLOAD_LINKS:
-        raise ValueError(
-            "Unsupported year '%s'; supported values are %s"
-            % (year, tuple(_IMAGE_DOWNLOAD_LINKS.keys()))
-        )
-
-    if split not in _IMAGE_DOWNLOAD_LINKS[year]:
-        raise ValueError(
-            "Unsupported split '%s'; supported values are %s"
-            % (split, tuple(_IMAGE_DOWNLOAD_LINKS[year].keys()))
-        )
-
-    if classes is not None and split == "test":
-        logger.warning("Test split is unlabeled; ignoring classes requirement")
-        classes = None
-
-    if scratch_dir is None:
-        scratch_dir = os.path.join(dataset_dir, "scratch")
-
-    anno_path = os.path.join(dataset_dir, "labels.json")
-    images_dir = os.path.join(dataset_dir, "data")
-    split_size = _SPLIT_SIZES[year][split]
-
-    etau.ensure_dir(images_dir)
-
-    did_download = False
-
-    #
-    # Download annotations to `raw_dir`, if necessary
-    #
-
-    if raw_dir is None:
-        raw_dir = os.path.join(dataset_dir, "raw")
-
-    etau.ensure_dir(raw_dir)
-
-    if split != "test":
-        src_path = _ANNOTATION_DOWNLOAD_LINKS[year]
-        rel_path = _ANNOTATION_PATHS[year][split]
-        subdir = "trainval"
-        anno_type = "annotations"
-    else:
-        src_path = _TEST_INFO_DOWNLOAD_LINKS[year]
-        rel_path = _TEST_INFO_PATHS[year]
-        subdir = "test"
-        anno_type = "test info"
-
-    zip_path = os.path.join(scratch_dir, os.path.basename(src_path))
-    unzip_dir = os.path.join(scratch_dir, subdir)
-    content_dir = os.path.join(unzip_dir, os.path.dirname(rel_path))
-    full_anno_path = os.path.join(raw_dir, os.path.basename(rel_path))
-
-    if not os.path.isfile(full_anno_path):
-        logger.info("Downloading %s to '%s'", anno_type, zip_path)
-        etaw.download_file(src_path, path=zip_path)
-
-        logger.info("Extracting %s to '%s'", anno_type, full_anno_path)
-        etau.extract_zip(zip_path, outdir=unzip_dir, delete_zip=False)
-        _merge_dir(content_dir, raw_dir)
-        did_download = True
-    else:
-        logger.info("Found %s at '%s'", anno_type, full_anno_path)
-
-    # This will store the loaded annotations, if they were necessary
-    d = None
-    all_classes = None
-
-    #
-    # Download images to `images_dir`, if necessary
-    #
-
-    images_src_path = _IMAGE_DOWNLOAD_LINKS[year][split]
-    images_zip_path = os.path.join(
-        scratch_dir, os.path.basename(images_src_path)
-    )
-    unzip_images_dir = os.path.splitext(images_zip_path)[0]
-
-    if classes is None and image_ids is None and max_samples is None:
-        # Full image download
-        num_existing = len(etau.list_files(images_dir))
-        num_download = split_size - num_existing
-        if num_download > 0:
-            if num_existing > 0:
-                logger.info(
-                    "Found %d (< %d) downloaded images; must download full "
-                    "image zip",
-                    num_existing,
-                    split_size,
-                )
-
-            logger.info("Downloading images to '%s'", images_zip_path)
-            etaw.download_file(images_src_path, path=images_zip_path)
-            logger.info("Extracting images to '%s'", images_dir)
-            etau.extract_zip(images_zip_path, delete_zip=False)
-            etau.move_dir(unzip_images_dir, images_dir)
-            did_download = True
-        else:
-            logger.info("Images already downloaded")
-    else:
-        # Partial image download
-
-        # Load annotations to use to determine what images to use
-        d = etas.load_json(full_anno_path)
-        (
-            _,
-            all_classes_map,
-            _,
-            images,
-            annotations,
-        ) = _parse_coco_detection_annotations(d, extra_attrs=True)
-
-        if all_classes_map is not None:
-            all_classes = _to_classes(all_classes_map)
-
-        if image_ids is not None:
-            # Start with specific images
-            image_ids = _parse_image_ids(image_ids, images, split=split)
-        else:
-            # Start with all images
-            image_ids = list(images.keys())
-
-        if classes is not None:
-            # Filter by specified classes
-            all_ids, any_ids = _get_images_with_classes(
-                image_ids, annotations, classes, all_classes_map
-            )
-        else:
-            all_ids = image_ids
-            any_ids = []
-
-        all_ids = sorted(all_ids)
-        any_ids = sorted(any_ids)
-
-        if shuffle:
-            if seed is not None:
-                random.seed(seed)
-
-            random.shuffle(all_ids)
-            random.shuffle(any_ids)
-
-        image_ids = all_ids + any_ids
-
-        # Determine IDs to download
-        existing_ids, downloadable_ids = _get_existing_ids(
-            images_dir, images, image_ids
-        )
-
-        if max_samples is not None:
-            num_existing = len(existing_ids)
-            num_downloadable = len(downloadable_ids)
-            num_available = num_existing + num_downloadable
-            if num_available < max_samples:
-                logger.warning(
-                    "Only found %d (<%d) samples matching your "
-                    "requirements",
-                    num_available,
-                    max_samples,
-                )
-
-            if max_samples > num_existing:
-                num_download = max_samples - num_existing
-                download_ids = downloadable_ids[:num_download]
-            else:
-                download_ids = []
-        else:
-            download_ids = downloadable_ids
-
-        # Download necessary images
-        num_existing = len(existing_ids)
-        num_download = len(download_ids)
-        if num_existing > 0:
-            if num_download > 0:
-                logger.info(
-                    "%d images found; downloading the remaining %d",
-                    num_existing,
-                    num_download,
-                )
-            else:
-                logger.info("Sufficient images already downloaded")
-        elif num_download > 0:
-            logger.info("Downloading %d images", num_download)
-
-        if num_download > 0:
-            _download_images(images_dir, download_ids, images, num_workers)
-            did_download = True
-
-    downloaded_filenames = etau.list_files(images_dir)
-    num_samples = len(downloaded_filenames)  # total downloaded
-
-    #
-    # Write usable annotations file to `anno_path`, if necessary
-    #
-
-    if not os.path.isfile(anno_path):
-        did_download = True
-
-    if did_download:
-        if d is None:
-            d = etas.load_json(full_anno_path)
-
-            categories = d.get("categories", None)
-            if categories is not None:
-                all_classes_map, _ = parse_coco_categories(categories)
-                all_classes = _to_classes(all_classes_map)
-            else:
-                all_classes = None
-
-        if num_samples >= split_size:
-            logger.info("Writing annotations to '%s'", anno_path)
-            etau.copy_file(full_anno_path, anno_path)
-        else:
-            logger.info(
-                "Writing annotations for %d downloaded samples to '%s'",
-                num_samples,
-                anno_path,
-            )
-            _write_partial_annotations(
-                d, anno_path, split, downloaded_filenames
-            )
-
-    return num_samples, all_classes, did_download
-
-
-def _merge_dir(indir, outdir):
-    etau.ensure_dir(outdir)
-    for filename in os.listdir(indir):
-        inpath = os.path.join(indir, filename)
-        outpath = os.path.join(outdir, filename)
-        shutil.move(inpath, outpath)
-
-
-def _write_partial_annotations(d, outpath, split, filenames):
-    id_map = {i["file_name"]: i["id"] for i in d["images"]}
-    filenames = set(filenames)
-    image_ids = {id_map[f] for f in filenames}
-
-    d["images"] = [i for i in d["images"] if i["file_name"] in filenames]
-
-    if split != "test":
-        d["annotations"] = [
-            a for a in d["annotations"] if a["image_id"] in image_ids
-        ]
-    else:
-        d.pop("annotations", None)
-
-    etas.write_json(d, outpath)
 
 
 def _parse_label_types(label_types):
@@ -1975,49 +1665,6 @@ def _get_matching_item_ids(
         return item_ids[:max_samples]
 
     return item_ids
-
-
-def _get_existing_ids(images_dir, images, image_ids):
-    filenames = set(etau.list_files(images_dir))
-
-    existing_ids = []
-    downloadable_ids = []
-    for _id in image_ids:
-        if images[_id]["file_name"] in filenames:
-            existing_ids.append(_id)
-        else:
-            downloadable_ids.append(_id)
-
-    return existing_ids, downloadable_ids
-
-
-def _download_images(images_dir, image_ids, images, num_workers):
-    num_workers = fou.recommend_thread_pool_workers(num_workers)
-
-    tasks = []
-    for image_id in image_ids:
-        image_dict = images[image_id]
-        url = image_dict["coco_url"]
-        path = os.path.join(images_dir, image_dict["file_name"])
-        tasks.append((url, path))
-
-    if not tasks:
-        return
-
-    if num_workers <= 1:
-        with fou.ProgressBar(iters_str="images") as pb:
-            for task in pb(tasks):
-                _do_download(task)
-    else:
-        with fou.ProgressBar(total=len(tasks), iters_str="images") as pb:
-            with multiprocessing.dummy.Pool(num_workers) as pool:
-                for _ in pool.imap_unordered(_do_download, tasks):
-                    pb.update()
-
-
-def _do_download(args):
-    url, path = args
-    etaw.download_file(url, path=path, quiet=True)
 
 
 def _get_items_with_classes(
@@ -2142,8 +1789,8 @@ def _get_matching_objects(datumaro_objects, class_ids):
     return [obj for obj in datumaro_objects if obj.label_id in class_ids]
 
 
-def _parse_categories(categories, classes=None):
-    classes_map, _ = parse_datumaro_labels(categories)
+def _parse_label_categories(label_categories, classes=None):
+    classes_map, _ = parse_datumaro_label_categories(label_categories)
 
     if classes is None:
         return {c: i for i, c in classes_map.items()}
@@ -2156,20 +1803,18 @@ def _parse_categories(categories, classes=None):
     return {c: i for i, c in classes_map.items() if c in classes}
 
 
-def _coco_objects_to_polylines(
-    coco_objects,
+def _datumaro_objects_to_polylines(
+    datumaro_objects,
     frame_size,
     classes_map,
-    supercategory_map,
     tolerance,
     include_id,
 ):
     polylines = []
-    for coco_obj in coco_objects:
-        polyline = coco_obj.to_polyline(
+    for datumaro_object in datumaro_objects:
+        polyline = datumaro_object.to_polyline(
             frame_size,
             classes_map=classes_map,
-            supercategory_map=supercategory_map,
             tolerance=tolerance,
             include_id=include_id,
         )
@@ -2209,19 +1854,17 @@ def _datumaro_objects_to_detections(
     return fol.Detections(detections=detections)
 
 
-def _coco_objects_to_keypoints(
-    coco_objects,
+def _datumaro_objects_to_keypoints(
+    datumaro_objects,
     frame_size,
     classes_map,
-    supercategory_map,
     include_id,
 ):
     keypoints = []
-    for coco_obj in coco_objects:
-        keypoint = coco_obj.to_keypoints(
+    for datumaro_object in datumaro_objects:
+        keypoint = datumaro_object.to_keypoints(
             frame_size,
             classes_map=classes_map,
-            supercategory_map=supercategory_map,
             include_id=include_id,
         )
 
@@ -2232,6 +1875,27 @@ def _coco_objects_to_keypoints(
         return None
 
     return fol.Keypoints(keypoints=keypoints)
+
+
+def _datumaro_objects_to_classifications(
+    datumaro_objects,
+    classes_map,
+    include_id,
+):
+    classifications = []
+    for datumaro_object in datumaro_objects:
+        classification = datumaro_object.to_classification(
+            classes_map=classes_map,
+            include_id=include_id,
+        )
+
+        if classification is not None:
+            classifications.append(classification)
+
+    if not classifications:
+        return None
+
+    return fol.Classifications(classifications=classifications)
 
 
 def _get_attributes(label, extra_attrs):
@@ -2288,7 +1952,7 @@ def _pairwise(x):
     return zip(y, y)
 
 
-def _coco_segmentation_to_mask(segmentation, bbox, frame_size):
+def _datumaro_segmentation_to_mask(segmentation, bbox, frame_size):
     x, y, w, h = bbox
     width, height = frame_size
 
@@ -2333,26 +1997,14 @@ def _normalize_coco_segmentation(segmentation):
     return _segmentation
 
 
-def _polyline_to_coco_segmentation(polyline, frame_size, iscrowd="iscrowd"):
-    if polyline.get_attribute_value(iscrowd, None):
-        seg = polyline.to_segmentation(frame_size=frame_size, target=1)
-        return _mask_to_rle(seg.mask)
+def _polyline_to_datumaro_segmentation(polyline, frame_size):
 
-    width, height = frame_size
-    polygons = []
-    for points in polyline.points:
-        polygon = []
-        for x, y in points:
-            polygon.append(int(x * width))
-            polygon.append(int(y * height))
-
-        polygons.append(polygon)
-
-    return polygons
+    seg = polyline.to_segmentation(frame_size=frame_size, target=1)
+    return _mask_to_rle(seg.mask)
 
 
-def _instance_to_coco_segmentation(
-    detection, frame_size, iscrowd="iscrowd", tolerance=None
+def _instance_to_datumaro_segmentation(
+    detection, frame_size
 ):
     dobj = foue.to_detected_object(detection, extra_attrs=False)
 
@@ -2365,48 +2017,7 @@ def _instance_to_coco_segmentation(
         width, height = frame_size
         mask = np.zeros((height, width), dtype=bool)
 
-    if detection.get_attribute_value(iscrowd, None):
-        return _mask_to_rle(mask)
-
-    return _mask_to_polygons(mask, tolerance)
-
-
-def _make_coco_keypoints(keypoint, frame_size):
-    width, height = frame_size
-
-    keypoints = []
-    num_points = len(keypoint.points)
-    visibility = [None] * num_points
-    if "visible" in keypoint:
-        if isinstance(keypoint.visible, list):
-            if len(keypoint.visible) == num_points:
-                visibility = keypoint.visible
-            else:
-                logger.warning(
-                    "Ignoring 'visible' attribute of length %d for keypoint %s."
-                    " The length does not match the 'points' attribute of"
-                    " length %d."
-                    % (len(keypoint.visible), str(keypoint.id), num_points)
-                )
-        if isinstance(keypoint.visible, int):
-            visibility = [keypoint.visible] * num_points
-
-    for visible, (x, y) in zip(visibility, keypoint.points):
-        if np.isnan(x) or np.isnan(y):
-            _x = 0
-            _y = 0
-            _visible = 0
-        else:
-            _x = int(x * width)
-            _y = int(y * height)
-            _visible = 2
-
-        if visible is not None:
-            _visible = visible
-
-        keypoints.extend((_x, _y, _visible))
-
-    return keypoints
+    return _mask_to_rle(mask)
 
 
 def _mask_to_rle(mask):
@@ -2455,63 +2066,7 @@ def _close_contour(contour):
     return contour
 
 
-_IMAGE_DOWNLOAD_LINKS = {
-    "2014": {
-        "train": "http://images.cocodataset.org/zips/train2014.zip",
-        "validation": "http://images.cocodataset.org/zips/val2014.zip",
-        "test": "http://images.cocodataset.org/zips/test2014.zip",
-    },
-    "2017": {
-        "train": "http://images.cocodataset.org/zips/train2017.zip",
-        "validation": "http://images.cocodataset.org/zips/val2017.zip",
-        "test": "http://images.cocodataset.org/zips/test2017.zip",
-    },
-}
-
-_SPLIT_SIZES = {
-    "2014": {"train": 82783, "test": 40775, "validation": 40504},
-    "2017": {"train": 118287, "test": 40670, "validation": 5000},
-}
-
-_ANNOTATION_DOWNLOAD_LINKS = {
-    "2014": "http://images.cocodataset.org/annotations/annotations_trainval2014.zip",
-    "2017": "http://images.cocodataset.org/annotations/annotations_trainval2017.zip",
-}
-
-_ANNOTATION_PATHS = {
-    "2014": {
-        "train": "annotations/instances_train2014.json",
-        "validation": "annotations/instances_val2014.json",
-    },
-    "2017": {
-        "train": "annotations/instances_train2017.json",
-        "validation": "annotations/instances_val2017.json",
-    },
-}
-
-_KEYPOINTS_PATHS = {
-    "2014": {
-        "train": "annotations/person_keypoints_train2014.json",
-        "validation": "annotations/person_keypoints_val2014.json",
-    },
-    "2017": {
-        "train": "annotations/person_keypoints_train2017.json",
-        "validation": "annotations/person_keypoints_val2017.json",
-    },
-}
-
-_TEST_INFO_DOWNLOAD_LINKS = {
-    "2014": "http://images.cocodataset.org/annotations/image_info_test2014.zip",
-    "2017": "http://images.cocodataset.org/annotations/image_info_test2017.zip",
-}
-
-_TEST_INFO_PATHS = {
-    "2014": "annotations/image_info_test2014.json",
-    "2017": "annotations/image_info_test2017.json",
-}
-
 _SUPPORTED_LABEL_TYPES = ["classifications", "detections", "segmentations", "keypoints"]
 
-_SUPPORTED_SPLITS = ["train", "validation", "test"]
 
 _CSV_DELIMITERS = [",", ";", ":", " ", "\t", "\n"]

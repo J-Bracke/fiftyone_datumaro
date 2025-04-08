@@ -144,8 +144,13 @@ def import_samples(
         else:
             samples = map(parse_sample, iter(dataset_importer))
 
+        from fiftyone import ViewField as F
         if overwrite_existing_samples:
             #delete existing samples with same filename before adding the new ones
+            for sample in samples:
+                duplicate_sample = dataset.match(F("filepath").split("/")[-1] == sample["filepath"].split("/")[-1])
+                if duplicate_sample:
+                    dataset.delete_samples[duplicate_sample.id]
 
         sample_ids = dataset.add_samples(
             samples,
@@ -464,7 +469,7 @@ def _build_parse_sample_fcn(
             label_key = lambda k: label_field + "_" + k
         else:
             label_field = "ground_truth"
-            label_key = lambda k: k
+            label_key = lambda k: label_field + "_" + k
 
         def parse_sample(sample):
             image_path, image_metadata, label = sample
