@@ -66,7 +66,6 @@ def add_datumaro_labels(
         datumaro annotations
 
     When ``label_type="detections"``, the labels should have format::
-
         [
             {
                 "id": 1,
@@ -85,7 +84,6 @@ def add_datumaro_labels(
         ]
 
     When ``label_type="segmentations"``, the labels should have format::
-
         [
             {
                 "id": 1,
@@ -106,7 +104,6 @@ def add_datumaro_labels(
         ]
 
     When ``label_type="keypoints"``, the labels should have format::
-
         [
             {
                 "id": 1,
@@ -144,22 +141,29 @@ def add_datumaro_labels(
             containing such data on disk
         label_categories: can be any of the following:
             -   a list of labels dicts in the format of
-                :meth:`parse_datumaro_label_categories` specifying the classes and their
-                label IDs
-            -   a dict mapping class IDs to class labels
+                :meth:`parse_datumaro_label_categories` specifying the classes where the
+                 position of the labels dicts in the list will be used as the label IDs
+            -   a dict mapping label IDs to class labels
             -   a list of class labels whose 1-based ordering is assumed to
                 correspond to the labels IDs in the provided datumaro labels
-        label_types (None): a label type or list of label types to load. The
+        label_types ("detections"): a label type or list of label types to load. The
             supported values are
             ``("classifications", "detections", "segmentations", "keypoints")``.
             By default, all label types are loaded
         include_annotation_id (False): whether to include the ID of each
             annotation in the loaded labels
-        extra_attrs (True): whether to load extra annotation attributes onto
+        ann_attrs (True): whether to load extra annotation attributes onto
             the imported labels. Supported values are:
             -   ``True``: load all extra attributes found
             -   ``False``: do not load extra attributes
             -   a name or list of names of specific attributes to load
+        item_attrs (True): whether to load item attributes into a seperate label.
+                            Supported values are:
+            -   ``True``: load all item attributes found
+            -   ``False``: do not load item attributes
+            -   a name or list of names of specific attributes to load
+        tag_attributes (None): a list of attributes names that will be concatenated\
+                               with a seperating underscore to create a tag string.
         use_polylines (False): whether to represent segmentations as
             :class:`fiftyone.core.labels.Polylines` instances rather than
             :class:`fiftyone.core.labels.Detections` with dense masks
@@ -231,7 +235,7 @@ def add_datumaro_labels(
         datumaro_objects = datumaro_items_map[item_id]
 
         ## read item attributes into a seperate label of custom type "Item_attributes"
-        if item_attrs:
+        if item_attrs != False:
             if item_attributes[item_id]:
                 item_label["item_attributes"] = Item_attributes.from_dict(item_attributes[item_id])
 
@@ -319,7 +323,6 @@ class DatumaroDatasetImporter(
             and/or ``labels_path`` must be provided
         data_path (None): an optional parameter that enables explicit control
             over the location of the media. Can be any of the following:
-
             -   a folder name like ``"data"`` or ``"data/"`` specifying a
                 subfolder of ``dataset_dir`` where the media files reside
             -   an absolute directory path where the media files reside. In
@@ -331,17 +334,14 @@ class DatumaroDatasetImporter(
                 manifest. In this case, ``dataset_dir`` has no effect on the
                 location of the data
             -   a dict mapping filenames to absolute filepaths
-
             If None, this parameter will default to whichever of ``data/`` or
             ``data.json`` exists in the dataset directory
         labels_path (None): an optional parameter that enables explicit control
             over the location of the labels. Can be any of the following:
-
             -   a filename like ``"labels.json"`` specifying the location of
                 the labels in ``dataset_dir``
             -   an absolute filepath to the labels. In this case,
                 ``dataset_dir`` has no effect on the location of the labels
-
             If None, the parameter will default to ``labels.json``
         label_types (None): a label type or list of label types to load. The
             supported values are
@@ -352,7 +352,6 @@ class DatumaroDatasetImporter(
             specified class will be loaded
         item_ids (None): an optional list of specific item IDs to load. Can
             be provided in any of the following formats:
-
             -   a list of ``<item-id>`` strings
             -   a list of ``<split>/<item-id>`` strings
             -   the path to a text (newline-separated), JSON, or CSV file
@@ -620,7 +619,7 @@ class DatumaroDatasetImporter(
             )
 
             if classes_map is not None:
-                info["classes"] = _to_classes(classes_map)
+                info["classes"] = classes_map
 
             item_ids = _get_matching_item_ids(
                 classes_map,
@@ -727,23 +726,28 @@ class DatumaroDatasetExporter(
             exported labels
         image_format (None): the image format to use when writing in-memory
             images to disk. By default, ``fiftyone.config.default_image_ext``
-            is used
+            is used (.jpg)
         classes (None): the list of possible class labels
         label_categories (None): a list of label category dicts in the format of
-            :meth:`parse_datumaro_label_categories` specifying the classes and their
-            label IDs
+            :meth:`parse_datumaro_label_categories` specifying the classes where the
+                 position of the labels dicts in the list will be used as the label IDs
         info (None): a dict of info as returned by
             :meth:`load_datumaro_items` to include in the exported
             JSON. If not provided, this info will be extracted when
             :meth:`log_collection` is called, if possible
-        extra_attrs (True): whether to include extra object attributes in the
+        ann_attrs (True): whether to include extra object attributes in the
             exported labels. Supported values are:
             -   ``True``: export all extra attributes found
             -   ``False``: do not export extra attributes
             -   a name or list of names of specific attributes to export
-        ####coco_id (None): the name of a sample field containing the COCO IDs of
-            each image####
-        annotation_id (None): the name of a label field containing the COCO
+        item_attrs (True): whether to load item attributes into a seperate label.
+                            Supported values are:
+            -   ``True``: load all item attributes found
+            -   ``False``: do not load item attributes
+            -   a name or list of names of specific attributes to load
+        item_id_field ("item_id"): the name of a sample field containing the item ID of
+            each image sample
+        annotation_id (None): the name of a label field containing the datumaro
             annotation ID of each label
         num_decimals (None): an optional number of decimal places at which to
             round bounding box pixel coordinates. By default, no rounding is
@@ -764,8 +768,9 @@ class DatumaroDatasetExporter(
         classes=None,
         label_categories=None,
         info=None,
-        extra_attrs=True,
-        coco_id=None,
+        ann_attrs=True,
+        item_attrs=True,
+        item_id_field="item_id",
         annotation_id=None,
         num_decimals=None,
         tolerance=None,
@@ -794,17 +799,18 @@ class DatumaroDatasetExporter(
         self.classes = classes
         self.label_categories = label_categories
         self.info = info
-        self.extra_attrs = extra_attrs
-        self.coco_id = coco_id
+        self.ann_attrs = ann_attrs
+        self.item_attrs = item_attrs,
+        self.item_id_field = item_id_field
         self.annotation_id = annotation_id
         self.num_decimals = num_decimals
         self.tolerance = tolerance
 
-        self._image_id = None
-        self._image_id_map = None
-        self._anno_id = None
-        self._images = None
+        self._item_id = None
+        self._item_id_map = None
+        self._annotation_id = None
         self._annotations = None
+        self._items = None
         self._classes = None
         self._dynamic_classes = None
         self._labels_map_rev = None
@@ -820,9 +826,8 @@ class DatumaroDatasetExporter(
         return (fol.Detections, fol.Polylines, fol.Keypoints, fol.Classifications, Item_attributes)
 
     def setup(self):
-        self._image_id = 0
-        self._anno_id = 0
-        self._images = []
+        self._item_id = None
+        self._annotation_id = 0
         self._annotations = []
         self._has_labels = False
 
@@ -840,9 +845,9 @@ class DatumaroDatasetExporter(
         if self.info is None:
             self.info = sample_collection.info
 
-        if self.coco_id is not None:
-            self._image_id_map = dict(
-                zip(*sample_collection.values(["filepath", self.coco_id]))
+        if self.item_id_field is not None:
+            self._item_id_map = dict(
+                zip(*sample_collection.values(["filepath", self.item_id_field]))
             )
 
     def export_sample(self, image_or_path, label, metadata=None):
@@ -856,136 +861,145 @@ class DatumaroDatasetExporter(
         else:
             file_name = uuid
 
-        if self._image_id_map is not None:
-            image_id = self._image_id_map.get(image_or_path, None)
-            if image_id is None:
+        ## get item_id
+        if self._item_id_map is not None:
+            item_id = self._item_id_map.get(image_or_path, None)
+            if item_id is None:
                 msg = (
-                    "Ignoring sample with filepath '%s' that has no image ID"
+                    "Ignoring sample with filepath '%s' that has no item ID"
                     % image_or_path
                 )
                 warnings.warn(msg)
                 return
-
-            image_id = int(image_id)
         else:
-            self._image_id += 1
-            image_id = self._image_id
+            # create item_id from filename
+            item_id = uuid
 
-        ## not needed for datumaro
-        self._images.append(
-            {
-                "id": image_id,
-                "file_name": file_name,
-                "height": metadata.height,
-                "width": metadata.width,
-                "license": None,
-                "coco_url": None,
-            }
-        )
-
-        ## return only images with labels or not?
+        ## write only images to disk without labels
         if label is None:
             return
 
         self._has_labels = True
 
-        if isinstance(label, fol.Detections):
-            labels = label.detections
-        elif isinstance(label, fol.Polylines):
-            labels = label.polylines
-        elif isinstance(label, fol.Keypoints):
-            labels = label.keypoints
-        else:
-            raise ValueError(
-                "Unsupported label type %s. The supported types are %s"
-                % (type(label), self.label_cls)
-            )
+        item_annotations = []
+        item_attributes = {}
+        for label_field in label:
+            labels = None
+            if isinstance(label_field, fol.Detections):
+                labels = label_field.detections
+            elif isinstance(label_field, fol.Polylines):
+                labels = label_field.polylines
+            elif isinstance(label_field, fol.Keypoints):
+                labels = label_field.keypoints
+            elif isinstance(label_field, fol.Classifications):
+                labels = label_field.classifications
+            
+            if labels is not None:
+                for label in labels:
+                    _label = label.label
 
-        for label in labels:
-            _label = label.label
+                    if self._dynamic_classes:
+                        label_id = _label  # will be converted to int later
+                        self._classes.add(_label)
+                    else:
+                        if _label not in self._labels_map_rev:
+                            msg = (
+                                "Ignoring object with label '%s' not in provided "
+                                "classes" % _label
+                            )
+                            warnings.warn(msg)
+                            continue
 
-            if self._dynamic_classes:
-                category_id = _label  # will be converted to int later
-                self._classes.add(_label)
-            else:
-                if _label not in self._labels_map_rev:
-                    msg = (
-                        "Ignoring object with label '%s' not in provided "
-                        "classes" % _label
+                        label_id = self._labels_map_rev[_label]
+
+                    #self._annotation_id += 1
+
+                    obj = DatumaroObject.from_label(
+                        label,
+                        metadata,
+                        label_id=label_id,
+                        ann_attrs=self.ann_attrs,
+                        id_attr=self.annotation_id,
+                        num_decimals=self.num_decimals,
+                        treat_polyline_as_segmentation=self.treat_polyline_as_segmentation,
                     )
-                    warnings.warn(msg)
-                    continue
 
-                category_id = self._labels_map_rev[_label]
+                    if obj.id is None:
+                        obj.id = self._annotation_id
 
-            self._anno_id += 1
+                item_annotations.append(obj.to_anno_dict()) 
+                
+                if self.item_attrs != False:
+                    if etau.is_str(self.item_attrs):
+                        self.item_attrs = [self.item_attrs]
+                    for attribute in label_field.field_names:
+                        if attribute == "tags" or "id":
+                            continue
+                        elif self.item_attrs != True:
+                            if not attribute in self.item_attrs:
+                                continue
 
-            obj = COCOObject.from_label(
-                label,
-                metadata,
-                image_id=image_id,
-                category_id=category_id,
-                extra_attrs=self.extra_attrs,
-                id_attr=self.annotation_id,
-                iscrowd=self.iscrowd,
-                num_decimals=self.num_decimals,
-                tolerance=self.tolerance,
-            )
+                        item_attributes.update({attribute: label_field.get_field(attribute)})
 
-            if obj.id is None:
-                obj.id = self._anno_id
+            else:
+                raise ValueError(
+                    "Unsupported label type %s. The supported types are %s"
+                    % (type(label_field), self.label_cls)
+                )
 
-            self._annotations.append(obj.to_anno_dict())
+        item_dict = {"id": item_id,
+                     "annotations": item_annotations,
+                     "attr": item_attributes,
+                     "image": {"path": file_name,
+                               "size": [metadata.height,
+                                        metadata.width]},
+                     "media": {"path": file_name}}
+
+        self._items.append(item_dict)
+
 
     def close(self, *args):
         if self._dynamic_classes:
             labels_map_rev = _to_labels_map_rev(sorted(self._classes))
-            for anno in self._annotations:
-                anno["category_id"] = labels_map_rev[anno["category_id"]]
-        elif self.categories is None:
+            for item in self._items:
+                for anno in item["annotations"]:
+                    anno["label_id"] = labels_map_rev[anno["label_id"]]
+        elif self.label_categories is None:
             labels_map_rev = _to_labels_map_rev(self.classes)
 
-        _info = self.info or {}
-        _date_created = datetime.now().replace(microsecond=0).isoformat()
-
-        info = {
-            "year": _info.get("year", ""),
-            "version": _info.get("version", ""),
-            "contributor": _info.get("contributor", ""),
-            "url": _info.get("url", "https://voxel51.com/fiftyone"),
-            "date_created": _info.get("date_created", _date_created),
-        }
-
-        licenses = _info.get("licenses", [])
-
-        if self.categories is not None:
-            categories = self.categories
-        else:
-            categories = [
+        if self.label_categories is None:
+            label_categories = [
                 {
-                    "id": i,
                     "name": c,
-                    "supercategory": None,
+                    "parent": "",
+                    "attributes": []
                 }
                 for c, i in sorted(labels_map_rev.items(), key=lambda t: t[1])
             ]
+        else:
+            label_categories = self.label_categories
+
+        categories = {"label": {"labels": label_categories,
+                                "attributes": []},
+                      "points": {"items": []}}
+
+        _info = self.info or {}
+        _date_created = datetime.now().replace(microsecond=0).isoformat()
+        info = _info
+        info.update({"_date_created": _date_created})
 
         labels = {
             "info": info,
-            "licenses": licenses,
             "categories": categories,
-            "images": self._images,
+            "items": self._items,
         }
-
-        if self._has_labels:
-            labels["annotations"] = self._annotations
 
         etas.write_json(labels, self.labels_path)
 
         self._media_exporter.close()
 
     def _parse_classes(self):
-        if self.categories is not None:
+        if self.label_categories is not None:
             self._labels_map_rev = _parse_label_categories(
                 self.label_categories, classes=self.classes
             )
@@ -1298,7 +1312,7 @@ class DatumaroObject(object):
         label,
         metadata,
         label_id=None,
-        extra_attrs=True,
+        ann_attrs=True,
         id_attr=None,
         num_decimals=None,
         treat_polyline_as_segmentation=None
@@ -1314,7 +1328,7 @@ class DatumaroObject(object):
             metadata: a :class:`fiftyone.core.metadata.ImageMetadata` for the
                 image
             label_id (None): the label ID for the object
-            extra_attrs (True): whether to include extra attributes from the
+            ann_attrs (True): whether to include extra attributes from the
                 object. Supported values are:
                 -   ``True``: include all extra attributes found
                 -   ``False``: do not include extra attributes
@@ -1378,9 +1392,9 @@ class DatumaroObject(object):
         if id_attr is not None:
             _id = label.get_attribute_value(id_attr, 0)
         else:
-            _id = 0
+            _id = None
 
-        attributes = _get_attributes(label, extra_attrs)
+        attributes = _get_attributes(label, ann_attrs)
         attributes.pop(id_attr, None)  # okay if `id_attr` is None
         z_order = attributes.pop(z_order, 0)
         group = attributes.pop(group, 0)
@@ -1415,7 +1429,7 @@ class DatumaroObject(object):
 
         attributes = {}
 
-        if self.include_id:
+        if include_id:
             attributes["annotation_id"] = self.id
 
         return label, attributes
@@ -1496,10 +1510,10 @@ def load_datumaro_items(json_path, ann_attrs=True, item_attrs=True, tag_attribut
             -   ``True``: load all attributes found
             -   ``False``: do not load attributes
             -   a name or list of names of specific attributes to load
-        item_attrs (True): whether to load image attributes.
+        item_attrs (True): whether to load item attributes.
                 Supported values are:
-                -   ``True``: load all image attributes
-                -   ``False``: do not load image attributes
+                -   ``True``: load all item attributes
+                -   ``False``: do not load item attributes
                 -   a name or list of names of specific attributes to load
         tag_attributes (None): a list of attributes names that will be concatenated\
             with a seperating underscore to create a tag string.
@@ -1520,12 +1534,14 @@ def load_datumaro_items(json_path, ann_attrs=True, item_attrs=True, tag_attribut
     if info is None:
         info = {}
 
+    label_categories = None
     if categories is not None:
+        label_categories = categories.get("label", {}).get("labels", [])
         info["categories"] = categories
 
     # Load classes
-    if categories is not None:
-        classes_map = parse_datumaro_label_categories(categories)
+    if label_categories is not None:
+        classes_map = parse_datumaro_label_categories(label_categories)
     else:
         classes_map = None
 
@@ -1564,9 +1580,9 @@ def _parse_datumaro_items(d, ann_attrs=True, item_attrs=True, tag_attributes=Non
         else:
             annotations = None
         if not len(item_attributes) == 0:
-            image_attributes = dict(image_attributes)
+            item_attributes = dict(item_attributes)
         else:
-            image_attributes = None
+            item_attributes = None
     else:
         annotations = None
         item_attributes = None
@@ -1688,11 +1704,11 @@ def _get_items_with_classes(
     all_ids = []
     any_ids = []
     for item_id in item_ids:
-        coco_objects = annotations.get(item_id, None)
-        if not coco_objects:
+        datumaro_objects = annotations.get(item_id, None)
+        if not datumaro_objects:
             continue
 
-        oids = set(o.label_id for o in coco_objects)
+        oids = set(o.label_id for o in datumaro_objects)
         if class_ids.issubset(oids):
             all_ids.append(item_id)
         elif class_ids & oids:
@@ -1707,11 +1723,11 @@ def _parse_item_ids(raw_item_ids, items, split=None):
         item_ids_path = raw_item_ids
         ext = os.path.splitext(item_ids_path)[-1]
         if ext == ".txt":
-            raw_image_ids = _load_item_ids_txt(item_ids_path)
+            raw_item_ids = _load_item_ids_txt(item_ids_path)
         elif ext == ".json":
-            raw_image_ids = _load_item_ids_json(item_ids_path)
+            raw_item_ids = _load_item_ids_json(item_ids_path)
         elif ext == ".csv":
-            raw_image_ids = _load_item_ids_csv(item_ids_path)
+            raw_item_ids = _load_item_ids_csv(item_ids_path)
         else:
             raise ValueError(
                 "Invalid item ID file '%s'. Supported formats are .txt, "
@@ -1768,11 +1784,7 @@ def _load_item_ids_json(json_path):
 
 
 def _to_labels_map_rev(classes):
-    return {c: i for i, c in enumerate(classes, 1)}
-
-
-def _to_classes(classes_map):
-    return [classes_map[i] for i in sorted(classes_map.keys())]
+    return {c: i for i, c in enumerate(classes, 0)}
 
 
 def _get_class_ids(classes, classes_map):
@@ -1790,7 +1802,7 @@ def _get_matching_objects(datumaro_objects, class_ids):
 
 
 def _parse_label_categories(label_categories, classes=None):
-    classes_map, _ = parse_datumaro_label_categories(label_categories)
+    classes_map = parse_datumaro_label_categories(label_categories)
 
     if classes is None:
         return {c: i for i, c in classes_map.items()}
@@ -1898,18 +1910,18 @@ def _datumaro_objects_to_classifications(
     return fol.Classifications(classifications=classifications)
 
 
-def _get_attributes(label, extra_attrs):
-    if extra_attrs == True:
+def _get_attributes(label, ann_attrs):
+    if ann_attrs == True:
         return dict(label.iter_attributes())
 
-    if extra_attrs == False:
+    if ann_attrs == False:
         return {}
 
-    if etau.is_str(extra_attrs):
-        extra_attrs = [extra_attrs]
+    if etau.is_str(ann_attrs):
+        ann_attrs = [ann_attrs]
 
     return {
-        name: label.get_attribute_value(name, None) for name in extra_attrs
+        name: label.get_attribute_value(name, None) for name in ann_attrs
     }
 
 
@@ -2006,7 +2018,7 @@ def _polyline_to_datumaro_segmentation(polyline, frame_size):
 def _instance_to_datumaro_segmentation(
     detection, frame_size
 ):
-    dobj = foue.to_detected_object(detection, extra_attrs=False)
+    dobj = foue.to_detected_object(detection, ann_attrs=False)
 
     try:
         mask = etai.render_instance_image(

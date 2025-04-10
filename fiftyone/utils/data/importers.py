@@ -94,6 +94,9 @@ def import_samples(
         progress (None): whether to render a progress bar (True/False), use the
             default value ``fiftyone.config.show_progress_bars`` (None), or a
             progress callback function to invoke instead
+        overwrite_existing_samples (True): whether existing samples in the dataset
+            with the same filename as the new imported samples should be deleted
+            from the dataset and replaced by the new samples
 
     Returns:
         a list of IDs of the samples that were added to the dataset
