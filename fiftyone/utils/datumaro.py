@@ -16,6 +16,7 @@ import os
 import random
 import shutil
 import warnings
+from typing import Iterator, List, Tuple, Union, Set, Dict
 
 import numpy as np
 from skimage import measure
@@ -33,6 +34,7 @@ import fiftyone.core.utils as fou
 import fiftyone.utils.data as foud
 import fiftyone.utils.eta as foue
 from fiftyone import ViewField as F
+import fiftyone
 
 mask_utils = fou.lazy_import(
     "pycocotools.mask", callback=lambda: fou.ensure_import("pycocotools")
@@ -43,19 +45,19 @@ logger = logging.getLogger(__name__)
 
 
 def add_datumaro_labels(
-    sample_collection,
-    label_field,
-    labels_or_path,
-    label_categories,
-    label_types="detections",
-    include_annotation_id=False,
-    ann_attrs=True,
-    item_attrs=True,
-    tag_attributes=["uuid"],
-    use_polylines=False,
-    tolerance=None,
-    overwrite_labels=True
-):
+    sample_collection: fiftyone.core.collections.SampleCollection,
+    label_field: Union[str, Dict[str, str]],
+    labels_or_path: Union[List[Dict], str],
+    label_categories: Union[List[Dict], Dict[int, str], List[str]],
+    label_types: Union[str, List[str]] = "detections",
+    include_annotation_id: bool = False,
+    ann_attrs: Union[bool, List[str]] = True,
+    item_attrs: Union[bool, List[str]] = True,
+    tag_attributes: List[str] = ["uuid"],
+    use_polylines: bool = False,
+    tolerance: int = None,
+    overwrite_labels: bool = True
+) -> None:
     """Adds the given datumaro labels to the collection.
 
     The ``labels_or_path`` argument can be any of the following:
@@ -398,25 +400,25 @@ class DatumaroDatasetImporter(
 
     def __init__(
         self,
-        dataset_dir=None,
-        data_path=None,
-        labels_path=None,
-        label_types=None,
-        classes=None,
-        item_ids=None,
-        include_annotation_id=False,
-        ann_attrs=True,
-        item_attrs=True,
-        only_matching=False,
-        use_polylines=False,
-        tolerance=None,
-        shuffle=False,
-        seed=None,
-        max_samples=None,
-        tag_attributes=None,
-        read_metadata_from_file=False,
-        read_uuid_from_filename=False
-    ):
+        dataset_dir: str = None,
+        data_path: str = None,
+        labels_path: str = None,
+        label_types: Union[str, List[str]] = None,
+        classes: Union[str, List[str]] = None,
+        item_ids: Union[str, List[str]] = None,
+        include_annotation_id: bool = False,
+        ann_attrs: Union[bool, List[str]] = True,
+        item_attrs: Union[bool, List[str]] = True,
+        only_matching: bool = False,
+        use_polylines: bool = False,
+        tolerance: int = None,
+        shuffle: bool = False,
+        seed: str = None,
+        max_samples: int = None,
+        tag_attributes: List[str] = ["uuid"],
+        read_metadata_from_file: bool = False,
+        read_uuid_from_filename: bool = False
+    ) -> None:
         if dataset_dir is None and data_path is None and labels_path is None:
             raise ValueError(
                 "At least one of `dataset_dir`, `data_path`, and "
@@ -476,7 +478,7 @@ class DatumaroDatasetImporter(
     def __len__(self):
         return len(self._filenames)
 
-    def __next__(self):
+    def __next__(self) -> Tuple[str, fom.ImageMetadata, dict]:
         filename = next(self._iter_filenames)
 
         if os.path.isabs(filename):
@@ -589,7 +591,7 @@ class DatumaroDatasetImporter(
         return len(self._label_types) == 1
 
     @property
-    def label_cls(self):
+    def label_cls(self) -> Union[fol.Label, Dict[str, fol.Label]]:
         seg_type = fol.Polylines if self.use_polylines else fol.Detections
         types = {
             "classifications": fol.Classifications,
@@ -663,7 +665,7 @@ class DatumaroDatasetImporter(
         self._annotations = annotations
         self._filenames = filenames
 
-    def get_dataset_info(self):
+    def get_dataset_info(self) -> dict:
         return self._info
 
 
@@ -758,23 +760,23 @@ class DatumaroDatasetExporter(
 
     def __init__(
         self,
-        export_dir=None,
-        data_path=None,
-        labels_path=None,
-        export_media=None,
-        rel_dir=None,
-        abs_paths=False,
-        image_format=None,
-        classes=None,
-        label_categories=None,
-        info=None,
-        ann_attrs=True,
-        item_attrs=True,
-        item_id_field="item_id",
-        annotation_id=None,
-        num_decimals=None,
-        tolerance=None,
-    ):
+        export_dir: str = None,
+        data_path: str = None,
+        labels_path: str = None,
+        export_media: Union[bool, str] = None,
+        rel_dir: str = None,
+        abs_paths: bool = False,
+        image_format: str = None,
+        classes: List[str] = None,
+        label_categories: List[dict] = None,
+        info: dict = None,
+        ann_attrs: Union[bool, List[str]] = True,
+        item_attrs: Union[bool, List[str]] = True,
+        item_id_field: str = "item_id",
+        annotation_id: str = None,
+        num_decimals: int = None,
+        tolerance: int = None,
+    ) -> None:
         data_path, export_media = self._parse_data_path(
             export_dir=export_dir,
             data_path=data_path,
@@ -850,7 +852,11 @@ class DatumaroDatasetExporter(
                 zip(*sample_collection.values(["filepath", self.item_id_field]))
             )
 
-    def export_sample(self, image_or_path, label, metadata=None):
+    def export_sample(self,
+                      image_or_path: Union[np.ndarray, str],
+                      label: Union[fol.Label, Dict[str, fol.Label]],
+                      metadata: fom.ImageMetadata = None
+                      ) -> None:
         out_image_path, uuid = self._media_exporter.export(image_or_path)
 
         if metadata is None:
@@ -1037,17 +1043,17 @@ class DatumaroObject(object):
 
     def __init__(
         self,
-        id=None,
-        type=None,
-        label_id=None,
-        attributes=None,
-        z_order=0,
-        group=0,
-        visibility=[0],
-        rle=None,
-        points=None,
-        bbox=None,
-        tag_attributes=None,
+        id: int = None,
+        type: str = None,
+        label_id: int = None,
+        attributes: Dict[str, Union[str, int, bool]] = None,
+        z_order: int = 0,
+        group: int = 0,
+        visibility: List[int] = [0],
+        rle: Dict[str, Union[str, List[int]]] = None,
+        points: List[float] = None,
+        bbox: List[float] = None,
+        tag_attributes: List[str] = None,
     ):
         self.id = id
         self.type = type
@@ -1066,11 +1072,11 @@ class DatumaroObject(object):
 
     def to_polyline(
         self,
-        frame_size,
-        classes_map=None,
-        tolerance=None,
-        include_id=False,
-    ):
+        frame_size: Tuple[int],
+        classes_map: Dict[int, str] = None,
+        tolerance: int = None,
+        include_id: bool = False,
+    ) -> None | fol.Polyline:
         """Returns a :class:`fiftyone.core.labels.Polyline` representation of
         the object.
 
@@ -1111,9 +1117,9 @@ class DatumaroObject(object):
 
     def to_classification(
         self,
-        classes_map=None,
-        include_id=False
-    ):
+        classes_map: Dict[int, str] = None,
+        include_id: bool = False,
+    ) -> None | fol.Classification:
         """Returns a :class:`fiftyone.core.labels.Classification` representation of
         the object.
 
@@ -1140,10 +1146,10 @@ class DatumaroObject(object):
 
     def to_keypoints(
         self,
-        frame_size,
-        classes_map=None,
-        include_id=False,
-    ):
+        frame_size: Tuple[int],
+        classes_map: Dict[int, str] = None,
+        include_id: bool = False,
+    ) -> None | fol.Keypoint:
         """Returns a :class:`fiftyone.core.labels.Keypoint` representation of
         the object.
 
@@ -1178,11 +1184,11 @@ class DatumaroObject(object):
 
     def to_detection(
         self,
-        frame_size,
-        classes_map=None,
-        load_segmentation=False,
-        include_id=False
-    ):
+        frame_size: Tuple[int],
+        classes_map: Dict[int, str] = None,
+        load_segmentation: bool = False,
+        include_id: bool = False
+    ) -> None | fol.Detection:
         """Returns a :class:`fiftyone.core.labels.Detection` representation of
         the object.
 
@@ -1265,14 +1271,16 @@ class DatumaroObject(object):
         return d
 
     @classmethod
-    def from_anno_dict(cls, d, ann_attrs=True, tag_attributes=None):
+    def from_anno_dict(cls,
+                       d: Dict[str, Union[str, int, list, dict]],
+                       ann_attrs: Union[bool, List[str]] = True,
+                       tag_attributes: List[str] = None):
         """Creates a :class:`DatumaroObject` from a Datumaro annotation dict.
 
         Args:
             d: a Datumaro annotation dict
             ann_attrs (True): whether to load annotation attributes.
                 Supported values are:
-
                 -   ``True``: load all attributes
                 -   ``False``: do not load attributes
                 -   a name or list of names of specific attributes to load
@@ -1309,13 +1317,13 @@ class DatumaroObject(object):
     @classmethod
     def from_label(
         cls,
-        label,
-        metadata,
-        label_id=None,
-        ann_attrs=True,
-        id_attr=None,
-        num_decimals=None,
-        treat_polyline_as_segmentation=None
+        label: fol.Label,
+        metadata: fom.ImageMetadata,
+        label_id: Union[int, str] = None,
+        ann_attrs: Union[bool, List[str]] = True,
+        id_attr: str = None,
+        num_decimals: int = None,
+        treat_polyline_as_segmentation: bool = None
     ):
         """Creates a :class:`DatumaroObject` from a compatible
         :class:`fiftyone.core.labels.Label`.
@@ -1413,15 +1421,19 @@ class DatumaroObject(object):
             visibility = visibility
         )
 
-    def _get_label(self, classes):
+    def _get_label(self,
+                   classes: List[str] = None
+                   ) -> Union[int, str]:
         if classes:
             return classes[self.label_id]
 
         return str(self.label_id)
 
     def _get_object_label_and_attributes(
-        self, classes_map, include_id
-    ):
+        self,
+        classes_map: Dict[int, str] = None,
+        include_id: bool = False
+    ) -> Tuple[str, dict]:
         if classes_map:
             label = classes_map[self.label_id]
         else:
@@ -1472,7 +1484,10 @@ def read_metadata_from_image_file(image_path: str) -> dict:
             metadata_fields_dict[meta_object] = fiftyone.DynamicEmbeddedDocument().from_dict(meta_dict)
 
 
-def flatten_dict(input_dict, parent_key='', sep='_') -> dict:
+def flatten_dict(input_dict: dict,
+                 parent_key: str = '',
+                 sep: str = '_'
+                 ) -> dict:
     """
     Flatten a nested dictionary.
 
@@ -1498,7 +1513,11 @@ def flatten_dict(input_dict, parent_key='', sep='_') -> dict:
     return items
 
 
-def load_datumaro_items(json_path, ann_attrs=True, item_attrs=True, tag_attributes=None):
+def load_datumaro_items(json_path: str,
+                        ann_attrs: Union[bool, List[str]] = True,
+                        item_attrs: Union[bool, List[str]] = True,
+                        tag_attributes: List[str] = None
+                        ) -> Tuple[dict, dict | None, list, dict | None, dict | None]:
     """Loads the Datumaro items from the given JSON file.
 
     See :ref:`this page <DatumaroDataset-import>` for format details.
@@ -1545,21 +1564,25 @@ def load_datumaro_items(json_path, ann_attrs=True, item_attrs=True, tag_attribut
     else:
         classes_map = None
 
-    items, item_attributes, annotations = _parse_datumaro_items(datumaro_json["items"], ann_attrs=ann_attrs, item_attrs=item_attrs,
+    item_ids, item_attributes, annotations = _parse_datumaro_items(datumaro_json["items"], ann_attrs=ann_attrs, item_attrs=item_attrs,
                                                                 tag_attributes=tag_attributes)
 
-    return info, classes_map, items, item_attributes, annotations
+    return info, classes_map, item_ids, item_attributes, annotations
 
 
-def _parse_datumaro_items(d, ann_attrs=True, item_attrs=True, tag_attributes=None):
+def _parse_datumaro_items(d: dict,
+                          ann_attrs: Union[bool, List[str]] = True,
+                          item_attrs: Union[bool, List[str]] = True,
+                          tag_attributes: List[str] = None
+                          ) -> Tuple[list, dict | None, dict | None]:
     # Load items and annotation attributes
     _items = d.get("items", None)
-    items = []
+    item_ids = []
     if _items is not None:
         annotations = defaultdict(list)
         item_attributes = defaultdict(list)
         for i in _items:
-            items.append(i["id"])
+            item_ids.append(i["id"])
             if i["annotations"] is not None:
                 for a in i["annotations"]:
                     annotations[i["id"]].append(DatumaroObject.from_anno_dict(a, ann_attrs=ann_attrs, tag_attributes=tag_attributes))
@@ -1587,10 +1610,10 @@ def _parse_datumaro_items(d, ann_attrs=True, item_attrs=True, tag_attributes=Non
         annotations = None
         item_attributes = None
 
-    return items, item_attributes, annotations
+    return item_ids, item_attributes, annotations
 
 
-def parse_datumaro_label_categories(labels):
+def parse_datumaro_label_categories(labels: dict) -> dict:
     """Parses the Datumaro categories labels list.
 
     Args:
@@ -1616,7 +1639,7 @@ def parse_datumaro_label_categories(labels):
     return classes_map
 
 
-def _parse_label_types(label_types):
+def _parse_label_types(label_types: Union[str, List[str]]) -> List[str]:
     if label_types is None:
         return _SUPPORTED_LABEL_TYPES
 
@@ -1643,14 +1666,14 @@ def _parse_label_types(label_types):
 
 
 def _get_matching_item_ids(
-    classes_map,
-    items,
-    annotations,
-    item_ids=None,
-    classes=None,
-    shuffle=False,
-    seed=None,
-    max_samples=None,
+    classes_map: Dict[int, str],
+    items: list[str],
+    annotations: dict,
+    item_ids: Union[str, List[str]] = None,
+    classes: List[str] = None,
+    shuffle: bool = False,
+    seed: str = None,
+    max_samples: int = None,
 ):
     if item_ids is not None:
         item_ids = _parse_item_ids(item_ids, items)
@@ -1684,7 +1707,10 @@ def _get_matching_item_ids(
 
 
 def _get_items_with_classes(
-    item_ids, annotations, target_classes, classes_map
+    item_ids,
+    annotations,
+    target_classes,
+    classes_map
 ):
     if annotations is None:
         logger.warning("Dataset is unlabeled; ignoring classes requirement")

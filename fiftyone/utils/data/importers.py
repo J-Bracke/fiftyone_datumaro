@@ -60,7 +60,7 @@ def import_samples(
     dynamic=False,
     add_info=True,
     progress=None,
-    overwrite_existing_samples=True
+    overwrite_existing_samples: bool = True
 ):
     """Adds the samples from the given :class:`DatasetImporter` to the dataset.
 
