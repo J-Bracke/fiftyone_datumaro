@@ -5931,6 +5931,7 @@ class Dataset(foc.SampleCollection, metaclass=DatasetSingleton):
         dynamic=False,
         add_info=True,
         progress=None,
+        overwrite_existing_samples: bool = True
     ):
         """Adds the samples from the given
         :class:`fiftyone.utils.data.importers.DatasetImporter` to the dataset.
@@ -5980,6 +5981,7 @@ class Dataset(foc.SampleCollection, metaclass=DatasetSingleton):
             dynamic=dynamic,
             add_info=add_info,
             progress=progress,
+            overwrite_existing_samples = overwrite_existing_samples
         )
 
     def merge_importer(
@@ -6926,6 +6928,7 @@ class Dataset(foc.SampleCollection, metaclass=DatasetSingleton):
         tags=None,
         dynamic=False,
         progress=None,
+        overwrite_existing_samples: bool = True
     ):
         """Creates a :class:`Dataset` by importing the samples in the given
         :class:`fiftyone.utils.data.importers.DatasetImporter`.
@@ -6975,6 +6978,7 @@ class Dataset(foc.SampleCollection, metaclass=DatasetSingleton):
             tags=tags,
             dynamic=dynamic,
             progress=progress,
+            overwrite_existing_samples = overwrite_existing_samples
         )
         return dataset
 

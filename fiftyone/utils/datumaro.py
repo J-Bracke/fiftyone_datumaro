@@ -12,7 +12,7 @@ from datetime import datetime
 from itertools import groupby
 import logging
 import multiprocessing.dummy
-import os
+import os, copy
 import random
 import shutil
 import warnings
@@ -150,7 +150,7 @@ def add_datumaro_labels(
                 correspond to the labels IDs in the provided datumaro labels
         label_types ("detections"): a label type or list of label types to load. The
             supported values are
-            ``("classifications", "detections", "segmentations", "keypoints")``.
+            ``("classifications", "detections", "polygons", "segmentations", "keypoints")``.
             By default, all label types are loaded
         include_annotation_id (False): whether to include the ID of each
             annotation in the loaded labels
@@ -252,15 +252,29 @@ def add_datumaro_labels(
             if detections is not None:
                 item_label["detections"] = detections
 
+        if "polygons" in _label_types:
+                polygons = _datumaro_objects_to_polylines(
+                        datumaro_objects,
+                        frame_size,
+                        classes_map,
+                        tolerance,
+                        include_annotation_id,
+                        False
+                    )
+                
+                if polygons is not None:
+                    labels["polygons"] = polygons
+
         if "segmentations" in _label_types:
             if use_polylines:
-                segmentations = _datumaro_objects_to_detections(
-                    datumaro_objects,
-                    frame_size,
-                    classes_map,
-                    tolerance,
-                    include_annotation_id
-                )
+                segmentations = _datumaro_objects_to_polylines(
+                        datumaro_objects,
+                        frame_size,
+                        classes_map,
+                        tolerance,
+                        include_annotation_id,
+                        use_polylines
+                    )
             else:
                 segmentations = _datumaro_objects_to_detections(
                     datumaro_objects,
@@ -347,7 +361,7 @@ class DatumaroDatasetImporter(
             If None, the parameter will default to ``labels.json``
         label_types (None): a label type or list of label types to load. The
             supported values are
-            ``("classifications", "detections", "segmentations", "keypoints")``.
+            ``("classifications", "detections", "polygons", "segmentations", "keypoints")``.
             By default, all label types are loaded
         classes (None): a string or list of strings specifying required classes
             to load. Only samples containing at least one instance of a
@@ -371,7 +385,7 @@ class DatumaroDatasetImporter(
             -   ``True``: load all item attributes found
             -   ``False``: do not load item attributes
             -   a name or list of names of specific attributes to load
-        tag_attributes (None): a list of attributes names that will be concatenated\
+        tag_attributes ("uuid"): a list of attributes names that will be concatenated\
                                with a seperating underscore to create a tag string.
         only_matching (False): whether to only load labels that match the
             ``classes`` requirement that you provide (True), or to load all
@@ -396,6 +410,10 @@ class DatumaroDatasetImporter(
             stored in the .png-file in the tEXT format and store them as additional labels
         read_uuid_from_filename (False): whether to read the uuid from the filename
             and store them as an additional annotation attribute
+        load_all_images_from_data_path (True): whether to load all images found on the
+            the data path or just the images that are mentioned in labels.json file
+        load_only_images_with_annotations_dict (False): whether to load only those images
+            that do not have an empty annotation dict in the labels.json file
     """
 
     def __init__(
@@ -408,7 +426,7 @@ class DatumaroDatasetImporter(
         item_ids: Union[str, List[str]] = None,
         include_annotation_id: bool = False,
         ann_attrs: Union[bool, List[str]] = True,
-        item_attrs: Union[bool, List[str]] = True,
+        item_attrs: Union[bool, List[str]] = False,
         only_matching: bool = False,
         use_polylines: bool = False,
         tolerance: int = None,
@@ -417,7 +435,9 @@ class DatumaroDatasetImporter(
         max_samples: int = None,
         tag_attributes: List[str] = ["uuid"],
         read_metadata_from_file: bool = False,
-        read_uuid_from_filename: bool = False
+        read_uuid_from_filename: bool = False,
+        load_all_images_from_data_path: bool = True,
+        load_only_images_with_annotations_dict: bool = False
     ) -> None:
         if dataset_dir is None and data_path is None and labels_path is None:
             raise ValueError(
@@ -434,7 +454,7 @@ class DatumaroDatasetImporter(
         labels_path = self._parse_labels_path(
             dataset_dir=dataset_dir,
             labels_path=labels_path,
-            default="/annotations/default.json",
+            default="annotations/default.json",
         )
 
         _label_types = _parse_label_types(label_types)
@@ -460,6 +480,8 @@ class DatumaroDatasetImporter(
         self.tag_attributes = tag_attributes
         self.read_metadata_from_file = read_metadata_from_file
         self.read_uuid_from_filename = read_uuid_from_filename
+        self.load_all_images_from_data_path = load_all_images_from_data_path
+        self.load_only_images_with_annotations_dict = load_only_images_with_annotations_dict
 
         self._label_types = _label_types
         self._info = None
@@ -470,6 +492,7 @@ class DatumaroDatasetImporter(
         self._filenames = None
         self._iter_filenames = None
         self._item_attributes = None
+
 
     def __iter__(self):
         self._iter_filenames = iter(self._filenames)
@@ -519,7 +542,7 @@ class DatumaroDatasetImporter(
 
             if "detections" in self._label_types:
                 detections = _datumaro_objects_to_detections(
-                    datumaro_objects,
+                    copy.deepcopy(datumaro_objects),
                     frame_size,
                     self._classes_map,
                     False,  # no segmentations
@@ -531,15 +554,16 @@ class DatumaroDatasetImporter(
             if "segmentations" in self._label_types:
                 if self.use_polylines:
                     segmentations = _datumaro_objects_to_polylines(
-                        datumaro_objects,
+                        copy.deepcopy(datumaro_objects),
                         frame_size,
                         self._classes_map,
                         self.tolerance,
                         self.include_annotation_id,
+                        self.use_polylines
                     )
                 else:
                     segmentations = _datumaro_objects_to_detections(
-                        datumaro_objects,
+                        copy.deepcopy(datumaro_objects),
                         frame_size,
                         self._classes_map,
                         True,  # load segmentations
@@ -549,9 +573,22 @@ class DatumaroDatasetImporter(
                 if segmentations is not None:
                     labels["segmentations"] = segmentations
 
+            if "polygons" in self._label_types:
+                polygons = _datumaro_objects_to_polylines(
+                        copy.deepcopy(datumaro_objects),
+                        frame_size,
+                        self._classes_map,
+                        self.tolerance,
+                        self.include_annotation_id,
+                        False
+                    )
+                
+                if polygons is not None:
+                    labels["polygons"] = polygons
+
             if "keypoints" in self._label_types:
                 keypoints = _datumaro_objects_to_keypoints(
-                    datumaro_objects,
+                    copy.deepcopy(datumaro_objects),
                     frame_size,
                     self._classes_map,
                     self.include_annotation_id,
@@ -562,7 +599,7 @@ class DatumaroDatasetImporter(
 
             if "classifications" in self._label_types:
                 classifications = _datumaro_objects_to_classifications(
-                    datumaro_objects,
+                    copy.deepcopy(datumaro_objects),
                     self._classes_map,
                     self.include_annotation_id,
                 )
@@ -572,9 +609,6 @@ class DatumaroDatasetImporter(
 
             if "datumaro_item_id" in self._label_types:
                 labels["datumaro_item_id"] = item_id
-
-        if self._has_scalar_labels:
-            labels = next(iter(labels.values())) if labels else None
 
         return item_path, item_metadata, labels
 
@@ -596,6 +630,7 @@ class DatumaroDatasetImporter(
         types = {
             "classifications": fol.Classifications,
             "detections": fol.Detections,
+            "polygons": fol.Polylines,
             "segmentations": seg_type,
             "keypoints": fol.Keypoints,
             "item_attributes": Item_attributes
@@ -608,7 +643,6 @@ class DatumaroDatasetImporter(
 
     def setup(self):
         item_paths_map = self._load_data_map(self.data_path, recursive=True)
-
         if self.labels_path is not None and os.path.isfile(self.labels_path) and item_paths_map:
             (
                 info,
@@ -621,7 +655,7 @@ class DatumaroDatasetImporter(
             )
 
             if classes_map is not None:
-                info["classes"] = classes_map
+                info["classes"] = [class_label for class_number, class_label in sorted(classes_map.items())]
 
             item_ids = _get_matching_item_ids(
                 classes_map,
@@ -635,11 +669,18 @@ class DatumaroDatasetImporter(
             )
             item_ids = set(item_ids)
 
-            filenames = fos.normpath(list(item_paths_map.keys()))
-            if not self.load_all_images_without_labels:
-                # check if image files exist for every item_id
+            filenames = list(item_paths_map.keys())
+            if not self.load_all_images_from_data_path:
+                # check for which image files an item id exists
                 item_ids_with_file = [".".join(filename.split(".")[:-1]) for filename in filenames]
                 indices = [index for index, value in enumerate(item_ids_with_file) if value in item_ids]
+                filenames_exist = [filenames[i] for i in indices]
+                filenames = filenames_exist
+            elif self.load_only_images_with_annotations_dict:
+                # check for which image files any annotation dict exists
+                idem_ids_with_ann = set(annotations.keys())
+                item_ids_with_file = [".".join(filename.split(".")[:-1]) for filename in filenames]
+                indices = [index for index, value in enumerate(item_ids_with_file) if value in idem_ids_with_ann]
                 filenames_exist = [filenames[i] for i in indices]
                 filenames = filenames_exist
 
@@ -649,7 +690,7 @@ class DatumaroDatasetImporter(
             items = None
             item_attributes = None
             annotations = None
-            filenames = fos.normpath(list(item_paths_map.keys()))
+            filenames = list(item_paths_map.keys())
 
         if self.only_matching and self.classes is not None:
             class_ids = _get_class_ids(self.classes, classes_map)
@@ -756,6 +797,8 @@ class DatumaroDatasetExporter(
             done
         tolerance (None): a tolerance, in pixels, when generating approximate
             polylines for instance masks. Typical values are 1-3 pixels
+        treat_polyline_as_segmentation: whether to convert a polyline element into a
+            dense mask.
     """
 
     def __init__(
@@ -776,6 +819,7 @@ class DatumaroDatasetExporter(
         annotation_id: str = None,
         num_decimals: int = None,
         tolerance: int = None,
+        treat_polyline_as_segmentation: bool = False
     ) -> None:
         data_path, export_media = self._parse_data_path(
             export_dir=export_dir,
@@ -807,6 +851,7 @@ class DatumaroDatasetExporter(
         self.annotation_id = annotation_id
         self.num_decimals = num_decimals
         self.tolerance = tolerance
+        self.treat_polyline_as_segmentation = treat_polyline_as_segmentation
 
         self._item_id = None
         self._item_id_map = None
@@ -1065,8 +1110,9 @@ class DatumaroObject(object):
         self.rle = rle
         self.points = points
         self.bbox = bbox
-        if tag_attributes is not None:
-            self.tag = ["_".join(list(str(attributes.get[tag_attribute, "NN"]) for tag_attribute in tag_attributes))]
+        self.tag_attributes = tag_attributes
+        if self.tag_attributes is not None:
+            self.tag = ["_".join(list(str(self.attributes.get(tag_attribute, "NN")) for tag_attribute in self.tag_attributes))]
         else:
             self.tag = []
 
@@ -1076,6 +1122,7 @@ class DatumaroObject(object):
         classes_map: Dict[int, str] = None,
         tolerance: int = None,
         include_id: bool = False,
+        convert_mask_to_polyline: bool = False
     ) -> None | fol.Polyline:
         """Returns a :class:`fiftyone.core.labels.Polyline` representation of
         the object.
@@ -1093,23 +1140,30 @@ class DatumaroObject(object):
             a :class:`fiftyone.core.labels.Polyline`, or None if no
             segmentation data is available
         """
-        if not self.rle:
+        if self.type == "polygon":
+            width, height = frame_size
+            points = []
+            for x, y in fou.iter_batches(self.points, 2):
+                    points.append((x / width, y / height))
+            points = [points]
+        elif convert_mask_to_polyline:
+            points = _get_polygons_for_segmentation(
+                self.rle, frame_size, tolerance
+            )
+        else:
             return None
 
         label, attributes = self._get_object_label_and_attributes(
             classes_map, include_id
         )
         attributes.update(self.attributes)
-        attributes.update(self.z_order, self.group)
-
-        points = _get_polygons_for_segmentation(
-            self.rle, frame_size, tolerance
-        )
+        attributes.update({"z_order": self.z_order})
+        attributes.update({"group": self.group})
 
         return fol.Polyline(
             label=label,
             points=points,
-            closed=False,
+            closed=True,
             filled=True,
             tags=self.tag,
             **attributes,
@@ -1131,12 +1185,14 @@ class DatumaroObject(object):
         Returns:
             a :class:`fiftyone.core.labels.Classification`
         """
+        if self.type != "label":
+            return None
 
         label, attributes = self._get_object_label_and_attributes(
             classes_map, include_id
         )
         attributes.update(self.attributes)
-        attributes.update(self.z_order, self.group)
+        attributes.update({"group": self.group})
 
         return fol.Classification(
             label=label,
@@ -1163,14 +1219,16 @@ class DatumaroObject(object):
             a :class:`fiftyone.core.labels.Keypoint`, or None if no keypoints
             data is available
         """
-        if self.points is None:
+        if self.type != "points":
             return None
 
         label, attributes = self._get_object_label_and_attributes(
             classes_map, include_id
         )
         attributes.update(self.attributes)
-        attributes.update(self.z_order, self.group, self.visibility)
+        attributes.update({"z_order": self.z_order})
+        attributes.update({"group": self.group})
+        attributes.update({"visibility": self.visibility})
 
         width, height = frame_size
 
@@ -1204,17 +1262,24 @@ class DatumaroObject(object):
             a :class:`fiftyone.core.labels.Detection`, or None if no bbox data
             is available
         """
-        if self.type == "mask" and self.rle:
-            self.bbox = mask_utils.toBbox(self.rle)
-        
-        if self.bbox is None:
-            return None
+        if load_segmentation:
+            if self.type == "mask":
+                if self.rle:
+                    self.bbox = mask_utils.toBbox(self.rle)
+            else:
+                return None
+        else:
+            if self.type == "mask":
+                return None
+            elif self.bbox is None:
+                return None
 
         label, attributes = self._get_object_label_and_attributes(
             classes_map, include_id
         )
         attributes.update(self.attributes)
-        attributes.update(self.z_order, self.group)
+        attributes.update({"z_order": self.z_order})
+        attributes.update({"group": self.group})
 
         width, height = frame_size
         x, y, w, h = self.bbox
@@ -1323,7 +1388,7 @@ class DatumaroObject(object):
         ann_attrs: Union[bool, List[str]] = True,
         id_attr: str = None,
         num_decimals: int = None,
-        treat_polyline_as_segmentation: bool = None
+        treat_polyline_as_segmentation: bool = False
     ):
         """Creates a :class:`DatumaroObject` from a compatible
         :class:`fiftyone.core.labels.Label`.
@@ -1346,7 +1411,7 @@ class DatumaroObject(object):
             num_decimals (None): an optional number of decimal places at which
                 to round bounding box pixel coordinates. By default, no
                 rounding is done
-            treat_polyline_as_segmentation (None): whether to convert a polygon into a mask
+            treat_polyline_as_segmentation (False): whether to convert a polygon into a mask
                 
         Returns:
             a :class:`DatumaroObject`
@@ -1471,7 +1536,7 @@ def read_metadata_from_image_file(image_path: str) -> dict:
             metadata_fields_dict["recording_location"] = fiftyone.GeoLocation(point=[location["lon"], location["lat"]])
         
         elif meta_object == "recording_timestamp":
-            metadata_fields_dict["recording_timestamp"] = datetime.datetime.fromtimestamp(float(metadata_dict[meta_object]))
+            metadata_fields_dict["recording_timestamp"] = datetime.fromtimestamp(float(metadata_dict[meta_object]))
         
         elif meta_object == "camera_name":
             metadata_fields_dict["camera_name"] = metadata_dict[meta_object]
@@ -1482,6 +1547,8 @@ def read_metadata_from_image_file(image_path: str) -> dict:
             if meta_object == "weather":
                 meta_dict = flatten_dict(meta_dict)
             metadata_fields_dict[meta_object] = fiftyone.DynamicEmbeddedDocument().from_dict(meta_dict)
+    
+    return metadata_fields_dict
 
 
 def flatten_dict(input_dict: dict,
@@ -1556,7 +1623,6 @@ def load_datumaro_items(json_path: str,
     label_categories = None
     if categories is not None:
         label_categories = categories.get("label", {}).get("labels", [])
-        info["categories"] = categories
 
     # Load classes
     if label_categories is not None:
@@ -1570,17 +1636,16 @@ def load_datumaro_items(json_path: str,
     return info, classes_map, item_ids, item_attributes, annotations
 
 
-def _parse_datumaro_items(d: dict,
+def _parse_datumaro_items(_items: dict,
                           ann_attrs: Union[bool, List[str]] = True,
                           item_attrs: Union[bool, List[str]] = True,
                           tag_attributes: List[str] = None
                           ) -> Tuple[list, dict | None, dict | None]:
     # Load items and annotation attributes
-    _items = d.get("items", None)
     item_ids = []
     if _items is not None:
         annotations = defaultdict(list)
-        item_attributes = defaultdict(list)
+        item_attributes = {}
         for i in _items:
             item_ids.append(i["id"])
             if i["annotations"] is not None:
@@ -1588,23 +1653,21 @@ def _parse_datumaro_items(d: dict,
                     annotations[i["id"]].append(DatumaroObject.from_anno_dict(a, ann_attrs=ann_attrs, tag_attributes=tag_attributes))
             if i["attr"] is not None:
                 if item_attrs is True:
-                    item_attributes[i["id"]].append(i["attr"])
+                    item_attributes.update({i["id"]: i["attr"]})
                 else:
-                    item_attributes[i["id"]] = {}
+                    item_attributes.update({i["id"]: {}})
                 
                 if etau.is_str(item_attrs):
                     item_attrs = [item_attrs]
 
                 if isinstance(item_attrs, list):
-                    item_attributes[i["id"]].append({f: i["attr"].get(f, None) for f in item_attrs})       
+                    item_attributes.update({i["id"]: {f: i["attr"].get(f, None) for f in item_attrs}})
 
         if not len(annotations) == 0:
             annotations = dict(annotations)
         else:
             annotations = None
-        if not len(item_attributes) == 0:
-            item_attributes = dict(item_attributes)
-        else:
+        if not item_attributes:
             item_attributes = None
     else:
         annotations = None
@@ -1847,6 +1910,7 @@ def _datumaro_objects_to_polylines(
     classes_map,
     tolerance,
     include_id,
+    convert_mask_to_polyline
 ):
     polylines = []
     for datumaro_object in datumaro_objects:
@@ -1855,6 +1919,7 @@ def _datumaro_objects_to_polylines(
             classes_map=classes_map,
             tolerance=tolerance,
             include_id=include_id,
+            convert_mask_to_polyline=convert_mask_to_polyline
         )
 
         if polyline is not None:
@@ -1878,6 +1943,7 @@ def _datumaro_objects_to_detections(
         detection = datumaro_obj.to_detection(
             frame_size,
             classes_map=classes_map,
+            load_segmentation=load_segmentations,
             include_id=include_id
         )
 
@@ -2104,7 +2170,7 @@ def _close_contour(contour):
     return contour
 
 
-_SUPPORTED_LABEL_TYPES = ["classifications", "detections", "segmentations", "keypoints"]
+_SUPPORTED_LABEL_TYPES = ["classifications", "detections", "polygons", "segmentations", "keypoints"]
 
 
 _CSV_DELIMITERS = [",", ";", ":", " ", "\t", "\n"]

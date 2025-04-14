@@ -153,7 +153,13 @@ def import_samples(
             for sample in samples:
                 duplicate_sample = dataset.match(F("filepath").split("/")[-1] == sample["filepath"].split("/")[-1])
                 if duplicate_sample:
-                    dataset.delete_samples[duplicate_sample.id]
+                    duplicate_sample_ids = duplicate_sample.values("id")
+                    dataset.delete_samples(duplicate_sample_ids)
+        
+        if isinstance(dataset_importer, GroupDatasetImporter):
+            samples = _generate_group_samples(dataset_importer, parse_sample)
+        else:
+            samples = map(parse_sample, iter(dataset_importer))
 
         sample_ids = dataset.add_samples(
             samples,
@@ -467,12 +473,15 @@ def _build_parse_sample_fcn(
         # Labeled image dataset
 
         if isinstance(label_field, dict):
-            label_key = lambda k: label_field.get(k, k)
+            label_key_Label_objects = lambda k: label_field.get(k, k)
+            label_key_non_Label_objects = lambda k: label_field.get(k, k)
         elif label_field is not None:
-            label_key = lambda k: label_field + "_" + k
+            label_key_Label_objects = lambda k: label_field + "_" + k
+            label_key_non_Label_objects = lambda k: k
         else:
             label_field = "ground_truth"
-            label_key = lambda k: label_field + "_" + k
+            label_key_Label_objects = lambda k: label_field + "_" + k
+            label_key_non_Label_objects = lambda k: k
 
         def parse_sample(sample):
             image_path, image_metadata, label = sample
@@ -483,9 +492,21 @@ def _build_parse_sample_fcn(
             )
 
             if isinstance(label, dict):
+                label_objects = {}
+                non_label_objects = {}
+                for k, v in label.items():
+                    if isinstance(v, fol.Label) and not isinstance(v, fol.GeoLocation):
+                        label_objects.update({k: v})
+                    else:
+                        non_label_objects.update({k: v})
+
                 sample.update_fields(
-                    {label_key(k): v for k, v in label.items()}
+                    {label_key_Label_objects(k): v for k, v in label_objects.items()}
                 )
+                sample.update_fields(
+                    {label_key_non_Label_objects(k): v for k, v in non_label_objects.items()}
+                )
+
             elif label is not None:
                 sample[label_field] = label
 
