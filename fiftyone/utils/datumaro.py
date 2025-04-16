@@ -56,7 +56,13 @@ def add_datumaro_labels(
     tag_attributes: List[str] = ["uuid"],
     use_polylines: bool = False,
     tolerance: int = None,
-    overwrite_labels: bool = True
+    overwrite_labels: bool = True,
+    item_ids: Union[str, List[str]] = None,
+    classes: Union[str, List[str]] = None,
+    only_matching: bool = False,
+    shuffle: bool = False,
+    seed: str = None,
+    max_samples: int = None
 ) -> None:
     """Adds the given datumaro labels to the collection.
 
@@ -173,6 +179,21 @@ def add_datumaro_labels(
             polylines for instance masks. Typical values are 1-3 pixels
         overwrite_labels (True): whether existing labels with the same tag for all items
             specified in the datumaro annotations should be deleted and replaced by the new added labels
+
+        item_ids (None): an optional list of specific item IDs to load. Can
+            be provided in any of the following formats:
+            -   a list of ``<item-id>`` strings
+            -   a list of ``<split>/<item-id>`` strings
+            -   the path to a text (newline-separated), JSON, or CSV file
+                containing the list of item IDs to load in either of the first
+                two formats
+        classes (None): a string or list of strings specifying required classes
+            to load. Only samples containing at least one instance of a
+            specified class will be loaded
+        only_matching (False): whether to only load labels that match the
+            ``classes`` requirement that you provide (True), or to load all
+            labels for samples that match the requirements (False)
+
     """
     if etau.is_str(labels_or_path):
         labels = etas.load_json(labels_or_path)
@@ -187,24 +208,6 @@ def add_datumaro_labels(
         annotations,
     ) = _parse_datumaro_items(labels, ann_attrs=ann_attrs, item_attrs=item_attrs, tag_attributes=tag_attributes)
 
-    #datumaro_items_map = defaultdict(list)
-    #for item_id, ann_dict in annotations.items():
-    #    datumaro_obj = DatumaroObject.from_anno_dict(ann_dict, ann_attrs=ann_attrs, tag_attributes=tag_attributes)
-    #    datumaro_items_map[item_id].append(datumaro_obj)
-
-    # Use field `item_id` as key to match labels with samples
-    item_ids_sample_collection = sample_collection.values("item_id")
-
-    item_ids = sorted(item_ids_filenames_map.keys())
-    bad_ids = set(item_ids) - set(item_ids_sample_collection)
-    if bad_ids:
-        item_ids = [_id for _id in item_ids if _id not in bad_ids]
-        logger.warning(
-            "Ignoring %d labels with nonexistent Item IDs (eg %s)",
-            len(bad_ids),
-            next(iter(bad_ids)),
-        )
-
     # prepare inputs
     if isinstance(label_categories, dict):
         classes_map = label_categories
@@ -217,6 +220,44 @@ def add_datumaro_labels(
 
     _label_types = _parse_label_types(label_types)
 
+    # check for item_ids with empty annotations list
+    loaded_item_ids_with_ann = set(annotations.keys())
+
+    # Use field `item_id` as key to match labels with samples
+    item_ids_sample_collection = sample_collection.values("item_id")
+
+    bad_ids = set(loaded_item_ids_with_ann) - set(item_ids_sample_collection)
+    if bad_ids:
+        loaded_item_ids_with_ann_in_sc = [_id for _id in item_ids if _id not in bad_ids]
+        logger.warning(
+            "Ignoring %d labels with nonexistent Item IDs (eg %s)",
+            len(bad_ids),
+            next(iter(bad_ids)),
+        )
+
+    matching_item_ids = _get_matching_item_ids(
+        classes_map,
+        loaded_item_ids_with_ann_in_sc,
+        annotations,
+        item_ids=item_ids,
+        classes=classes,
+        shuffle=shuffle,
+        seed=seed,
+        max_samples=max_samples,
+    )
+    matching_item_ids = set(matching_item_ids)
+
+    if only_matching and classes is not None:
+        class_ids = _get_class_ids(classes, classes_map)
+    else:
+        class_ids = None
+
+    #datumaro_items_map = defaultdict(list)
+    #for item_id, ann_dict in annotations.items():
+    #    datumaro_obj = DatumaroObject.from_anno_dict(ann_dict, ann_attrs=ann_attrs, tag_attributes=tag_attributes)
+    #    datumaro_items_map[item_id].append(datumaro_obj)
+
+    
     if isinstance(label_field, dict):
         label_field_key = lambda k: label_field.get(k, k)
     elif label_field is not None:
@@ -225,9 +266,12 @@ def add_datumaro_labels(
         label_field = "ground_truth"
         label_field_key = lambda k: label_field + "_" + k
 
-    # check for item_ids with empty annotations list
-    item_ids_with_ann = set(annotations.keys())
-    item_ids = item_ids_with_ann & set(item_ids)
+    detection_labels = {}
+    polygon_labels = {}
+    segmentation_labels = {}
+    keypoint_labels = {}
+    classification_labels = {}
+    item_attr_labels = {}
 
     # iterate through samples with item_id
     for item_id in item_ids: ## progress bar!
@@ -239,7 +283,7 @@ def add_datumaro_labels(
         frame_size = (width[0], height[0])
         
         item_label = {}
-        datumaro_objects = annotations[item_id]
+        datumaro_objects = annotations.get(item_id, [])
 
         if "detections" in _label_types:
             detections = _datumaro_objects_to_detections(
@@ -250,7 +294,7 @@ def add_datumaro_labels(
                 include_annotation_id
             )
             if detections is not None:
-                item_label["detections"] = detections
+                detection_labels[item_id] = detections
 
         if "polygons" in _label_types:
                 polygons = _datumaro_objects_to_polylines(
@@ -261,13 +305,12 @@ def add_datumaro_labels(
                         include_annotation_id,
                         False
                     )
-                
                 if polygons is not None:
-                    item_label["polygons"] = polygons
+                    polygon_labels[item_id] = polygons
 
         if "segmentations" in _label_types:
             if use_polylines:
-                segmentations = _datumaro_objects_to_polylines(
+                polygons = _datumaro_objects_to_polylines(
                         copy.deepcopy(datumaro_objects),
                         frame_size,
                         classes_map,
@@ -275,6 +318,9 @@ def add_datumaro_labels(
                         include_annotation_id,
                         use_polylines
                     )
+                if polygons is not None:
+                    polygon_labels[item_id] = polygons
+
             else:
                 segmentations = _datumaro_objects_to_detections(
                     copy.deepcopy(datumaro_objects),
@@ -283,9 +329,8 @@ def add_datumaro_labels(
                     True,  # load segmentations
                     include_annotation_id
                 )
-
-            if segmentations is not None:
-                item_label["segmentations"] = segmentations
+                if segmentations is not None:
+                    segmentation_labels[item_id] = segmentations
 
         if "keypoints" in _label_types:
             keypoints = _datumaro_objects_to_keypoints(
@@ -294,9 +339,8 @@ def add_datumaro_labels(
                 classes_map,
                 include_annotation_id,
             )
-
             if keypoints is not None:
-                item_label["keypoints"] = keypoints
+                keypoint_labels[item_id] = keypoints
 
         if "classifications" in _label_types:
             classifications = _datumaro_objects_to_classifications(
@@ -304,9 +348,8 @@ def add_datumaro_labels(
                 classes_map,
                 include_annotation_id,
             )
-
             if classifications is not None:
-                item_label["classifications"] = classifications
+                classification_labels[item_id] = classifications
 
         ## read item attributes into a seperate label of custom type "Item_attributes"
         if item_attrs != False:
@@ -549,7 +592,15 @@ class DatumaroDatasetImporter(
         ## read item attributes into a seperate label of custom type "Item_attributes"
         if self.item_attrs and self._item_attributes is not None:
             if self._item_attributes[item_id]:
-                labels["item_attributes"] = Item_attributes.from_dict(self._item_attributes[item_id])
+                item_attribute_label = Item_attribute_label(attributes=self._item_attributes[item_id])
+                if self.tag_attributes is not None:
+                    tag = "_".join(list(str(self._item_attributes[item_id].get(tag_attribute, "NN")) for tag_attribute in self.tag_attributes))
+                else:
+                    tag = ""
+                #item_attribute_label.tags = tag
+                self._item_attributes[item_id]["tag"] = tag
+                #labels["item_attributes"] = Item_attributes(item_attributes=[item_attribute_label])
+                labels["item_attributes"] = fiftyone.DynamicEmbeddedDocument().from_dict(self._item_attributes[item_id])
 
         if self._annotations is not None and item_id in self._matching_item_ids:
             datumaro_objects = self._annotations.get(item_id, [])
@@ -573,7 +624,7 @@ class DatumaroDatasetImporter(
 
             if "segmentations" in self._label_types:
                 if self.use_polylines:
-                    segmentations = _datumaro_objects_to_polylines(
+                    polygons = _datumaro_objects_to_polylines(
                         copy.deepcopy(datumaro_objects),
                         frame_size,
                         self._classes_map,
@@ -581,6 +632,9 @@ class DatumaroDatasetImporter(
                         self.include_annotation_id,
                         self.use_polylines
                     )
+                    if polygons is not None:
+                        labels["polygons"] = polygons
+
                 else:
                     segmentations = _datumaro_objects_to_detections(
                         copy.deepcopy(datumaro_objects),
@@ -589,9 +643,8 @@ class DatumaroDatasetImporter(
                         True,  # load segmentations
                         self.include_annotation_id,
                     )
-
-                if segmentations is not None:
-                    labels["segmentations"] = segmentations
+                    if segmentations is not None:
+                        labels["segmentations"] = segmentations
 
             if "polygons" in self._label_types:
                 polygons = _datumaro_objects_to_polylines(
@@ -602,7 +655,6 @@ class DatumaroDatasetImporter(
                         self.include_annotation_id,
                         False
                     )
-                
                 if polygons is not None:
                     labels["polygons"] = polygons
 
@@ -613,7 +665,6 @@ class DatumaroDatasetImporter(
                     self._classes_map,
                     self.include_annotation_id,
                 )
-
                 if keypoints is not None:
                     labels["keypoints"] = keypoints
 
@@ -623,12 +674,9 @@ class DatumaroDatasetImporter(
                     self._classes_map,
                     self.include_annotation_id,
                 )
-
                 if classifications is not None:
                     labels["classifications"] = classifications
 
-            if "datumaro_item_id" in self._label_types:
-                labels["datumaro_item_id"] = item_id
 
         return item_path, item_metadata, labels
 
@@ -677,9 +725,15 @@ class DatumaroDatasetImporter(
             if classes_map is not None:
                 info["classes"] = [class_label for class_number, class_label in sorted(classes_map.items())]
 
+            if self.load_only_images_with_annotations_dict:
+                # check for which image files any annotation dict exists
+                loaded_item_ids = set(annotations.keys())
+            else:
+                loaded_item_ids = list(item_ids_filenames_map.keys())
+
             matching_item_ids = _get_matching_item_ids(
                 classes_map,
-                list(item_ids_filenames_map.keys()),
+                loaded_item_ids,
                 annotations,
                 item_ids=self.item_ids,
                 classes=self.classes,
@@ -692,11 +746,6 @@ class DatumaroDatasetImporter(
 
             if self.load_all_images_from_data_path:
                 filenames = list(item_paths_map.keys())
-            elif self.load_only_images_with_annotations_dict:
-                # check for which image files any annotation dict exists
-                item_ids_with_ann = set(annotations.keys())
-                valid_item_ids = item_ids_with_ann & matching_item_ids
-                filenames = [filename for item_id, filename in item_ids_filenames_map.items() if item_id in valid_item_ids]
 
             # reverse mapping of item_ids_filenames_map
             filenames_item_ids_map = {value: key for key, value in item_ids_filenames_map.items()}
@@ -1531,11 +1580,21 @@ class DatumaroObject(object):
         return label, attributes
 
 
-class Item_attributes(fol._HasID, fol.Label):
+class Item_attribute_label(fol._HasID, fol.Label):
     """
     
     """
-    tags = []
+    #tags = fof.StringField()
+    attributes = fof.DictField()
+
+
+class Item_attributes(fol._HasLabelList, fol.Label):
+    """
+    
+    """
+    _LABEL_LIST_FIELD = "item_attributes"
+    
+    item_attributes = fof.ListField(fof.EmbeddedDocumentField(Item_attribute_label))
 
 
 def read_metadata_from_image_file(image_path: str) -> dict:
