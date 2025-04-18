@@ -17,6 +17,7 @@ import random
 import shutil
 import warnings
 from typing import Iterator, List, Tuple, Union, Set, Dict
+from tqdm import tqdm
 
 import numpy as np
 from skimage import measure
@@ -195,6 +196,7 @@ def add_datumaro_labels(
             labels for samples that match the requirements (False)
 
     """
+    print("[" + str(datetime.now()) + "]" + "<info>: Parsing items label from file ...")
     if etau.is_str(labels_or_path):
         labels = etas.load_json(labels_or_path)
         if isinstance(labels, dict):
@@ -234,6 +236,8 @@ def add_datumaro_labels(
             len(bad_ids),
             next(iter(bad_ids)),
         )
+    else:
+        loaded_item_ids_with_ann_in_sc = loaded_item_ids_with_ann
 
     matching_item_ids = _get_matching_item_ids(
         classes_map,
@@ -251,12 +255,6 @@ def add_datumaro_labels(
         class_ids = _get_class_ids(classes, classes_map)
     else:
         class_ids = None
-
-    #datumaro_items_map = defaultdict(list)
-    #for item_id, ann_dict in annotations.items():
-    #    datumaro_obj = DatumaroObject.from_anno_dict(ann_dict, ann_attrs=ann_attrs, tag_attributes=tag_attributes)
-    #    datumaro_items_map[item_id].append(datumaro_obj)
-
     
     if isinstance(label_field, dict):
         label_field_key = lambda k: label_field.get(k, k)
@@ -266,24 +264,28 @@ def add_datumaro_labels(
         label_field = "ground_truth"
         label_field_key = lambda k: label_field + "_" + k
 
-    detection_labels = {}
-    polygon_labels = {}
-    segmentation_labels = {}
-    keypoint_labels = {}
-    classification_labels = {}
-    item_attr_labels = {}
+    labels = {"detections": {},
+              "polygons": {},
+              "segmentations": {},
+              "keypoints": {},
+              "classifications": {},
+              "item_attributes": {}
+              }
 
+    print("[" + str(datetime.now()) + "]" + "<info>: Creating fiftyone label elements for items:")
     # iterate through samples with item_id
-    for item_id in item_ids: ## progress bar!
+    for item_id in tqdm(matching_item_ids):
         sample_view = sample_collection.select_by("item_id", item_id, ordered=True)
         sample_view.compute_metadata()
-        print(item_id)
-        #print(sample_view.first())
         width, height = sample_view.values(["metadata.width", "metadata.height"])
         frame_size = (width[0], height[0])
         
-        item_label = {}
         datumaro_objects = annotations.get(item_id, [])
+
+        if only_matching and class_ids is not None:
+            datumaro_objects = _get_matching_objects(
+                datumaro_objects, class_ids
+            )
 
         if "detections" in _label_types:
             detections = _datumaro_objects_to_detections(
@@ -294,19 +296,19 @@ def add_datumaro_labels(
                 include_annotation_id
             )
             if detections is not None:
-                detection_labels[item_id] = detections
+                labels["detections"][item_id] = detections
 
         if "polygons" in _label_types:
-                polygons = _datumaro_objects_to_polylines(
-                        copy.deepcopy(datumaro_objects),
-                        frame_size,
-                        classes_map,
-                        tolerance,
-                        include_annotation_id,
-                        False
-                    )
-                if polygons is not None:
-                    polygon_labels[item_id] = polygons
+            polygons = _datumaro_objects_to_polylines(
+                    copy.deepcopy(datumaro_objects),
+                    frame_size,
+                    classes_map,
+                    tolerance,
+                    include_annotation_id,
+                    False
+                )
+            if polygons is not None:
+                labels["polygons"][item_id] = polygons
 
         if "segmentations" in _label_types:
             if use_polylines:
@@ -319,7 +321,7 @@ def add_datumaro_labels(
                         use_polylines
                     )
                 if polygons is not None:
-                    polygon_labels[item_id] = polygons
+                    labels["polygons"][item_id] = polygons
 
             else:
                 segmentations = _datumaro_objects_to_detections(
@@ -330,7 +332,7 @@ def add_datumaro_labels(
                     include_annotation_id
                 )
                 if segmentations is not None:
-                    segmentation_labels[item_id] = segmentations
+                    labels["segmentations"][item_id] = segmentations
 
         if "keypoints" in _label_types:
             keypoints = _datumaro_objects_to_keypoints(
@@ -340,7 +342,7 @@ def add_datumaro_labels(
                 include_annotation_id,
             )
             if keypoints is not None:
-                keypoint_labels[item_id] = keypoints
+                labels["keypoints"][item_id] = keypoints
 
         if "classifications" in _label_types:
             classifications = _datumaro_objects_to_classifications(
@@ -349,39 +351,49 @@ def add_datumaro_labels(
                 include_annotation_id,
             )
             if classifications is not None:
-                classification_labels[item_id] = classifications
+                labels["classifications"][item_id] = classifications
 
-        ## read item attributes into a seperate label of custom type "Item_attributes"
+        # read item attributes into a seperate label of type "Classifications"
         if item_attrs != False:
             if item_attributes[item_id]:
-                item_label["item_attributes"] = Item_attributes.from_dict(item_attributes[item_id])
-
-        if item_label:
-            sample_view.set_values({label_field_key(k): v for k, v in item_label.items()})
-            """
-            for label_key, label_values in item_label.items():
-                print(label_values)
-                full_label_field = label_field_key(label_key)
-                #tag = label_values["tags"][0]
-                tag = []
-                #sample_view = sample_view.first()
-                if overwrite_labels:
-                    filtered_sample_view = sample_view.filter_labels(full_label_field, F("tag") != tag)
-                    if sample_view[full_label_field]:
-                        sample_view[full_label_field] = filtered_sample_view + label_values
-                    else:
-                        sample_view[full_label_field] = label_values
+                attributes = item_attributes[item_id]
+                if tag_attributes is not None:
+                    tag = ["_".join(list(str(item_attributes[item_id].get(tag_attribute, "NN")) for tag_attribute in tag_attributes))]
                 else:
-                    try:
-                        #if sample_view[full_label_field]:
-                        #    sample_view[full_label_field] = sample_view[full_label_field] + label_values
-                        #sample_view.set_values(full_label_field, label_values)
-                        sample_view.update_fields({label_field_key(k): v for k, v in item_label.items()})
-                    except:
-                        #sample_view.set_values(full_label_field, label_values)
-                        print("None")
-            """
-        #sample_view.save()
+                    tag = []
+                item_attributes_label = fol.Classification(label="item_attributes", tags=tag, **attributes)
+                labels["item_attributes"][item_id] = fol.Classifications(classifications=[item_attributes_label])
+
+    if item_attrs != False:
+        _label_types.append("item_attributes")
+
+    for label_type in _label_types:
+        print("[" + str(datetime.now()) + "]" + "<info>: Adding elements for label_type '" + label_type + "' to the fiftyone database:")
+        label_type_specific_label_dict = dict(sorted(labels[label_type].items()))
+        label_type_specific_view = sample_collection.select_by("item_id", label_type_specific_label_dict.keys(), ordered=True)
+
+        if label_type == "item_attributes":
+            label_type_field = "classifications"
+        elif label_type == "polygons":
+            label_type_field = "polylines"
+        elif label_type == "segmentations":
+            label_type_field = "detections"
+        else:
+            label_type_field = label_type
+
+        if label_type_specific_view.has_field(label_field_key(label_type)) and not overwrite_labels:
+            label_type_specific_field_list = label_type_specific_view.values(label_field_key(label_type))
+
+            for x_add_pos, x_add_label in enumerate(label_type_specific_label_dict.values()):
+                if label_type_specific_field_list[x_add_pos] is not None:
+                    label_type_specific_field_list[x_add_pos][label_type_field].extend(x_add_label[label_type_field])
+                else:
+                    label_type_specific_field_list[x_add_pos] = x_add_label
+
+            label_type_specific_view.set_values(label_field_key(label_type), label_type_specific_field_list, dynamic=True, progress=True)
+
+        else:
+            label_type_specific_view.set_values(label_field_key(label_type), label_type_specific_label_dict.values(), dynamic=True, progress=True)
 
 
 class DatumaroDatasetImporter(
@@ -592,15 +604,14 @@ class DatumaroDatasetImporter(
         ## read item attributes into a seperate label of custom type "Item_attributes"
         if self.item_attrs and self._item_attributes is not None:
             if self._item_attributes[item_id]:
-                item_attribute_label = Item_attribute_label(attributes=self._item_attributes[item_id])
+                attributes = self._item_attributes[item_id]
                 if self.tag_attributes is not None:
-                    tag = "_".join(list(str(self._item_attributes[item_id].get(tag_attribute, "NN")) for tag_attribute in self.tag_attributes))
+                    tag = ["_".join(list(str(self._item_attributes[item_id].get(tag_attribute, "NN")) for tag_attribute in self.tag_attributes))]
                 else:
-                    tag = ""
-                #item_attribute_label.tags = tag
-                self._item_attributes[item_id]["tag"] = tag
-                #labels["item_attributes"] = Item_attributes(item_attributes=[item_attribute_label])
-                labels["item_attributes"] = fiftyone.DynamicEmbeddedDocument().from_dict(self._item_attributes[item_id])
+                    tag = []
+                item_attributes = fol.Classification(label="item_attributes", tags=tag, **attributes)
+                labels["item_attributes"] = fol.Classifications(classifications=[item_attributes])
+
 
         if self._annotations is not None and item_id in self._matching_item_ids:
             datumaro_objects = self._annotations.get(item_id, [])
@@ -1579,23 +1590,23 @@ class DatumaroObject(object):
 
         return label, attributes
 
-
+"""
 class Item_attribute_label(fol._HasID, fol.Label):
-    """
+    #
     
-    """
+    #
     #tags = fof.StringField()
     attributes = fof.DictField()
 
 
 class Item_attributes(fol._HasLabelList, fol.Label):
-    """
+    #
     
-    """
+    #
     _LABEL_LIST_FIELD = "item_attributes"
     
     item_attributes = fof.ListField(fof.EmbeddedDocumentField(Item_attribute_label))
-
+"""
 
 def read_metadata_from_image_file(image_path: str) -> dict:
     """
@@ -1709,7 +1720,7 @@ def load_datumaro_items(json_path: str,
         classes_map = None
 
     item_ids_filenames_map, item_attributes, annotations = _parse_datumaro_items(datumaro_json["items"], ann_attrs=ann_attrs, item_attrs=item_attrs,
-                                                                tag_attributes=tag_attributes)
+                                                                                 tag_attributes=tag_attributes)
 
     return info, classes_map, item_ids_filenames_map, item_attributes, annotations
 

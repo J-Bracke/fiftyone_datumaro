@@ -101,6 +101,7 @@ def import_samples(
     Returns:
         a list of IDs of the samples that were added to the dataset
     """
+    print("[" + str(datetime.now()) + "]" + "<info>: Importing samples into Fiftyone:")
     if etau.is_str(tags):
         tags = [tags]
     elif tags is not None:
