@@ -49,7 +49,7 @@ def add_datumaro_labels(
     sample_collection: fiftyone.core.collections.SampleCollection,
     label_field: Union[str, Dict[str, str]],
     labels_or_path: Union[List[Dict], str],
-    label_categories: Union[List[Dict], Dict[int, str], List[str]],
+    label_categories: Union[List[Dict], Dict[int, str], List[str]] = None,
     label_types: Union[str, List[str]] = None,
     include_annotation_id: bool = False,
     ann_attrs: Union[bool, List[str]] = True,
@@ -180,7 +180,6 @@ def add_datumaro_labels(
             polylines for instance masks. Typical values are 1-3 pixels
         overwrite_labels (True): whether existing labels with the same tag for all items
             specified in the datumaro annotations should be deleted and replaced by the new added labels
-
         item_ids (None): an optional list of specific item IDs to load. Can
             be provided in any of the following formats:
             -   a list of ``<item-id>`` strings
@@ -194,31 +193,45 @@ def add_datumaro_labels(
         only_matching (False): whether to only load labels that match the
             ``classes`` requirement that you provide (True), or to load all
             labels for samples that match the requirements (False)
+        shuffle (False): whether to randomly shuffle the order in which the
+            samples are imported
+        seed (None): a random seed to use when shuffling
+        max_samples (None): a maximum number of samples to load. If
+            ``label_types`` and/or ``classes`` are also specified, first
+            priority will be given to samples that contain all of the specified
+            label types and/or classes, followed by samples that contain at
+            least one of the specified labels types or classes. The actual
+            number of samples loaded may be less than this maximum value if the
+            dataset does not contain sufficient samples matching your
+            requirements. By default, all matching samples are loaded
 
     """
     print("[" + str(datetime.now()) + "]" + "<info>: Parsing items label from file ...")
     if etau.is_str(labels_or_path):
-        labels = etas.load_json(labels_or_path)
-        if isinstance(labels, dict):
-            labels = labels["items"]
+        (
+            info,
+            classes_map,
+            item_ids_filenames_map,
+            item_attributes,
+            annotations
+        )= load_datumaro_items(labels_or_path, ann_attrs=ann_attrs, item_attrs=item_attrs, tag_attributes=tag_attributes)
+    
     else:
-        labels = labels_or_path
+        (
+            item_ids_filenames_map,
+            item_attributes,
+            annotations
+        ) = _parse_datumaro_items(labels_or_path, ann_attrs=ann_attrs, item_attrs=item_attrs, tag_attributes=tag_attributes)
 
-    (
-        item_ids_filenames_map,
-        item_attributes,
-        annotations,
-    ) = _parse_datumaro_items(labels, ann_attrs=ann_attrs, item_attrs=item_attrs, tag_attributes=tag_attributes)
-
-    # prepare inputs
-    if isinstance(label_categories, dict):
-        classes_map = label_categories
-    elif not label_categories:
-        classes_map = {}
-    elif isinstance(label_categories[0], dict):
-        classes_map = parse_datumaro_label_categories(label_categories)
-    else:
-        classes_map = {i: label for i, label in enumerate(label_categories, 1)}
+        # prepare inputs
+        if isinstance(label_categories, dict):
+            classes_map = label_categories
+        elif not label_categories:
+            classes_map = {}
+        elif isinstance(label_categories[0], dict):
+            classes_map = parse_datumaro_label_categories(label_categories)
+        else:
+            classes_map = {i: label for i, label in enumerate(label_categories, 1)}
 
     _label_types = _parse_label_types(label_types)
 
@@ -226,13 +239,18 @@ def add_datumaro_labels(
     loaded_item_ids_with_ann = set(annotations.keys())
 
     # Use field `item_id` as key to match labels with samples
-    item_ids_sample_collection = sample_collection.values("item_id")
+    try:
+        item_ids_sample_collection = sample_collection.values("item_id")
+    except:
+        print("[" + str(datetime.now()) + "]" + "<warn>: Selected sample collection '" + sample_collection.name + "' has no samples with field 'item_id'! "
+              "Aborting import because matching of the items to the sample collection is not possible without item_ids.")
+        return
 
     bad_ids = set(loaded_item_ids_with_ann) - set(item_ids_sample_collection)
     if bad_ids:
-        loaded_item_ids_with_ann_in_sc = [_id for _id in item_ids if _id not in bad_ids]
+        loaded_item_ids_with_ann_in_sc = [_id for _id in loaded_item_ids_with_ann if _id not in bad_ids]
         logger.warning(
-            "Ignoring %d labels with nonexistent Item IDs (eg %s)",
+            "[" + str(datetime.now()) + "]" + "<warn>: Ignoring %d labels with nonexistent Item IDs: %s",
             len(bad_ids),
             next(iter(bad_ids)),
         )
@@ -367,6 +385,11 @@ def add_datumaro_labels(
     if item_attrs != False:
         _label_types.append("item_attributes")
 
+    if use_polylines:
+        if "polygons" not in _label_types:
+            _label_types.append("polygons")
+        _label_types.remove("segmentations")
+
     for label_type in _label_types:
         print("[" + str(datetime.now()) + "]" + "<info>: Adding elements for label_type '" + label_type + "' to the fiftyone database:")
         label_type_specific_label_dict = dict(sorted(labels[label_type].items()))
@@ -392,9 +415,9 @@ def add_datumaro_labels(
 
             label_type_specific_view.set_values(label_field_key(label_type), label_type_specific_field_list, dynamic=True, progress=True)
 
-        else:
+        elif label_type_specific_label_dict:
             label_type_specific_view.set_values(label_field_key(label_type), label_type_specific_label_dict.values(), dynamic=True, progress=True)
-
+            label_type_specific_view.tag_labels("test_tag", label_fields=label_field_key(label_type))
 
 class DatumaroDatasetImporter(
     foud.LabeledImageDatasetImporter, foud.ImportPathsMixin
@@ -712,7 +735,7 @@ class DatumaroDatasetImporter(
             "polygons": fol.Polylines,
             "segmentations": seg_type,
             "keypoints": fol.Keypoints,
-            "item_attributes": Item_attributes
+            "item_attributes": fol.Classifications
         }
 
         if self._has_scalar_labels:
@@ -876,7 +899,7 @@ class DatumaroDatasetExporter(
             done
         tolerance (None): a tolerance, in pixels, when generating approximate
             polylines for instance masks. Typical values are 1-3 pixels
-        treat_polyline_as_segmentation: whether to convert a polyline element into a
+        treat_polyline_as_segmentation (False): whether to convert a polyline element into a
             dense mask.
     """
 
@@ -898,7 +921,8 @@ class DatumaroDatasetExporter(
         annotation_id: str = None,
         num_decimals: int = None,
         tolerance: int = None,
-        treat_polyline_as_segmentation: bool = False
+        treat_polyline_as_segmentation: bool = False,
+        include_items_without_labels_in_annotations_file: bool = True
     ) -> None:
         data_path, export_media = self._parse_data_path(
             export_dir=export_dir,
@@ -910,7 +934,7 @@ class DatumaroDatasetExporter(
         labels_path = self._parse_labels_path(
             export_dir=export_dir,
             labels_path=labels_path,
-            default="/annotations/default.json",
+            default="annotations/default.json",
         )
 
         super().__init__(export_dir=export_dir)
@@ -925,12 +949,13 @@ class DatumaroDatasetExporter(
         self.label_categories = label_categories
         self.info = info
         self.ann_attrs = ann_attrs
-        self.item_attrs = item_attrs,
+        self.item_attrs = item_attrs
         self.item_id_field = item_id_field
         self.annotation_id = annotation_id
         self.num_decimals = num_decimals
         self.tolerance = tolerance
         self.treat_polyline_as_segmentation = treat_polyline_as_segmentation
+        self.include_items_without_labels_in_annotations_file = include_items_without_labels_in_annotations_file
 
         self._item_id = None
         self._item_id_map = None
@@ -949,12 +974,13 @@ class DatumaroDatasetExporter(
 
     @property
     def label_cls(self):
-        return (fol.Detections, fol.Polylines, fol.Keypoints, fol.Classifications, Item_attributes)
+        return (fol.Detections, fol.Polylines, fol.Keypoints, fol.Classifications)
 
     def setup(self):
-        self._item_id = None
+        #self._item_id = None
         self._annotation_id = 0
         self._annotations = []
+        self._items = []
         self._has_labels = False
 
         self._parse_classes()
@@ -978,7 +1004,7 @@ class DatumaroDatasetExporter(
 
     def export_sample(self,
                       image_or_path: Union[np.ndarray, str],
-                      label: Union[fol.Label, Dict[str, fol.Label]],
+                      raw_label: Union[fol.Label, Dict[str, fol.Label]],
                       metadata: fom.ImageMetadata = None
                       ) -> None:
         out_image_path, uuid = self._media_exporter.export(image_or_path)
@@ -1005,77 +1031,92 @@ class DatumaroDatasetExporter(
             # create item_id from filename
             item_id = uuid
 
-        ## write only images to disk without labels
-        if label is None:
-            return
-
+        ## write only images to disk without labels if label is None
         self._has_labels = True
+        if isinstance(raw_label, dict):
+            if all(value is None for value in raw_label.values()):
+                self._has_labels = False
+                if not self.include_items_without_labels_in_annotations_file:
+                    return
+            else:
+                for key in [key for key, value in raw_label.items() if value is None]:
+                    del raw_label[key]
+        else:
+            if raw_label is None:
+                self._has_labels = False
+                if not self.include_items_without_labels_in_annotations_file:
+                    return
+            else:
+                raw_label = {"label_field": raw_label}
 
         item_annotations = []
         item_attributes = {}
-        for label_field in label:
-            labels = None
-            if isinstance(label_field, fol.Detections):
-                labels = label_field.detections
-            elif isinstance(label_field, fol.Polylines):
-                labels = label_field.polylines
-            elif isinstance(label_field, fol.Keypoints):
-                labels = label_field.keypoints
-            elif isinstance(label_field, fol.Classifications):
-                labels = label_field.classifications
-            
-            if labels is not None:
-                for label in labels:
-                    _label = label.label
-
-                    if self._dynamic_classes:
-                        label_id = _label  # will be converted to int later
-                        self._classes.add(_label)
-                    else:
-                        if _label not in self._labels_map_rev:
-                            msg = (
-                                "Ignoring object with label '%s' not in provided "
-                                "classes" % _label
-                            )
-                            warnings.warn(msg)
-                            continue
-
-                        label_id = self._labels_map_rev[_label]
-
-                    #self._annotation_id += 1
-
-                    obj = DatumaroObject.from_label(
-                        label,
-                        metadata,
-                        label_id=label_id,
-                        ann_attrs=self.ann_attrs,
-                        id_attr=self.annotation_id,
-                        num_decimals=self.num_decimals,
-                        treat_polyline_as_segmentation=self.treat_polyline_as_segmentation,
-                    )
-
-                    if obj.id is None:
-                        obj.id = self._annotation_id
-
-                item_annotations.append(obj.to_anno_dict()) 
+        if self._has_labels:
+            for label_field in raw_label.values():
+                labels = None
+                if isinstance(label_field, fol.Detections):
+                    labels = label_field.detections
+                elif isinstance(label_field, fol.Polylines):
+                    labels = label_field.polylines
+                elif isinstance(label_field, fol.Keypoints):
+                    labels = label_field.keypoints
+                elif isinstance(label_field, fol.Classifications):
+                    labels = label_field.classifications
                 
-                if self.item_attrs != False:
-                    if etau.is_str(self.item_attrs):
-                        self.item_attrs = [self.item_attrs]
-                    for attribute in label_field.field_names:
-                        if attribute == "tags" or "id":
+                if labels is not None:
+                    for label in labels:
+                        _label = label.label
+
+                        if _label == "item_attributes":
+                            if self.item_attrs != False:
+                                if etau.is_str(self.item_attrs):
+                                    self.item_attrs = [self.item_attrs]
+                                for attribute in label.field_names:
+                                    if attribute in ["tags", "id", "label", "confidence", "logits"]:
+                                        continue
+                                    elif self.item_attrs != True:
+                                        if not attribute in self.item_attrs:
+                                            continue
+                                    item_attributes.update({attribute: label.get_field(attribute)})
                             continue
-                        elif self.item_attrs != True:
-                            if not attribute in self.item_attrs:
+
+                        if self._dynamic_classes:
+                            label_id = _label  # will be converted to int later
+                            self._classes.add(_label)
+                        else:
+                            if _label not in self._labels_map_rev:
+                                msg = (
+                                    "Ignoring object with label '%s' not in provided "
+                                    "classes" % _label
+                                )
+                                warnings.warn(msg)
                                 continue
 
-                        item_attributes.update({attribute: label_field.get_field(attribute)})
+                            label_id = self._labels_map_rev[_label]
 
-            else:
-                raise ValueError(
-                    "Unsupported label type %s. The supported types are %s"
-                    % (type(label_field), self.label_cls)
-                )
+                        #self._annotation_id += 1
+                        
+                        obj = DatumaroObject.from_label(
+                            label,
+                            metadata,
+                            label_id=label_id,
+                            ann_attrs=self.ann_attrs,
+                            id_attr=self.annotation_id,
+                            num_decimals=self.num_decimals,
+                            treat_polyline_as_segmentation=self.treat_polyline_as_segmentation,
+                        )
+
+                        if obj.id is None:
+                            obj.id = self._annotation_id
+
+                        item_annotations.append(obj.to_anno_dict())
+
+                else:
+                    print(
+                        "Unsupported label type %s. The supported types are %s"
+                        % (type(label_field), self.label_cls)
+                    )
+                    continue
 
         item_dict = {"id": item_id,
                      "annotations": item_annotations,
@@ -1117,7 +1158,7 @@ class DatumaroDatasetExporter(
         _date_created = datetime.now().replace(microsecond=0).isoformat()
         info = _info
         info.update({"_date_created": _date_created})
-
+        
         labels = {
             "info": info,
             "categories": categories,
@@ -1220,11 +1261,14 @@ class DatumaroObject(object):
             segmentation data is available
         """
         if self.type == "polygon":
-            width, height = frame_size
-            points = []
-            for x, y in fou.iter_batches(self.points, 2):
-                    points.append((x / width, y / height))
-            points = [points]
+            if convert_mask_to_polyline:
+                return None
+            else:
+                width, height = frame_size
+                points = []
+                for x, y in fou.iter_batches(self.points, 2):
+                        points.append((x / width, y / height))
+                points = [points]
         elif convert_mask_to_polyline and self.type == "mask":
             points = _get_polygons_for_segmentation(
                 self.rle, frame_size, tolerance
@@ -1503,7 +1547,7 @@ class DatumaroObject(object):
         rle = None
         points = None
         attributes = {}
-        visibility = [0]
+        visibility = None
 
         if isinstance(label, fol.Detection):
             x, y, w, h = label.bounding_box
@@ -1515,6 +1559,7 @@ class DatumaroObject(object):
                     label, frame_size
                 )
                 type = "mask"
+                bbox = None
         elif isinstance(label, fol.Polyline):
             if treat_polyline_as_segmentation:
                 rle = _polyline_to_datumaro_segmentation(
@@ -1522,16 +1567,25 @@ class DatumaroObject(object):
                 )
                 type = "mask"
             else:
-                points = np.concatenate(label.points, axis=0)
+                point_list = []
+                for points in label.points[0]:
+                    x, y = points
+                    points = [x * width, y * height]
+                    point_list.extend(points)
+                points = point_list
                 type = "polygon"
 
         elif isinstance(label, fol.Classification):
             type="label"
             
         elif isinstance(label, fol.Keypoint):
-            points = label.points
-            num_points = len(points)
-            visibility = [None] * num_points
+            point_list = []
+            for points in label.points:
+                x, y = points
+                points = [x * width, y * height]
+                point_list.extend(points)
+            points = point_list
+            visibility = len(points)
             type="points"
 
         else:
@@ -1541,16 +1595,20 @@ class DatumaroObject(object):
             if num_decimals is not None:
                 bbox = [round(p, num_decimals) for p in bbox]
 
+        if points is not None:
+            if num_decimals is not None:
+                points = [round(p, num_decimals) for p in points]
+
         if id_attr is not None:
             _id = label.get_attribute_value(id_attr, 0)
         else:
             _id = None
-
+        
         attributes = _get_attributes(label, ann_attrs)
         attributes.pop(id_attr, None)  # okay if `id_attr` is None
-        z_order = attributes.pop(z_order, 0)
-        group = attributes.pop(group, 0)
-        attributes.pop(visibility, [0])
+        z_order = attributes.pop("z_order", 0)
+        group = attributes.pop("group", 0)
+        attributes.pop("visibility", [0])
 
         return cls(
             id=_id,
@@ -1590,23 +1648,6 @@ class DatumaroObject(object):
 
         return label, attributes
 
-"""
-class Item_attribute_label(fol._HasID, fol.Label):
-    #
-    
-    #
-    #tags = fof.StringField()
-    attributes = fof.DictField()
-
-
-class Item_attributes(fol._HasLabelList, fol.Label):
-    #
-    
-    #
-    _LABEL_LIST_FIELD = "item_attributes"
-    
-    item_attributes = fof.ListField(fof.EmbeddedDocumentField(Item_attribute_label))
-"""
 
 def read_metadata_from_image_file(image_path: str) -> dict:
     """
@@ -2196,13 +2237,13 @@ def _normalize_coco_segmentation(segmentation):
 def _polyline_to_datumaro_segmentation(polyline, frame_size):
 
     seg = polyline.to_segmentation(frame_size=frame_size, target=1)
-    return _mask_to_rle(seg.mask)
+    return _mask_to_comp_rle(seg.mask)
 
 
 def _instance_to_datumaro_segmentation(
     detection, frame_size
 ):
-    dobj = foue.to_detected_object(detection, ann_attrs=False)
+    dobj = foue.to_detected_object(detection, extra_attrs=False)
 
     try:
         mask = etai.render_instance_image(
@@ -2213,7 +2254,7 @@ def _instance_to_datumaro_segmentation(
         width, height = frame_size
         mask = np.zeros((height, width), dtype=bool)
 
-    return _mask_to_rle(mask)
+    return _mask_to_comp_rle(mask)
 
 
 def _mask_to_rle(mask):
@@ -2225,6 +2266,19 @@ def _mask_to_rle(mask):
         counts.append(len(list(elements)))
 
     return {"counts": counts, "size": list(mask.shape)}
+
+
+def _mask_to_comp_rle(mask):
+    """
+    returns compressed rle
+    """
+    rle = _mask_to_rle(mask)
+    rle_com = mask_utils.frPyObjects(rle, *rle["size"])
+    rle_com_counts_str = rle_com["counts"].decode("utf-8")
+    rle_com["counts"] = rle_com_counts_str
+    rle_com = dict(reversed(rle_com.items()))
+
+    return rle_com
 
 
 def _mask_to_polygons(mask, tolerance):
