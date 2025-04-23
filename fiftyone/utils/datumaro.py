@@ -901,6 +901,10 @@ class DatumaroDatasetExporter(
             polylines for instance masks. Typical values are 1-3 pixels
         treat_polyline_as_segmentation (False): whether to convert a polyline element into a
             dense mask.
+        sync_item_id_with_filename (True): whether the idem ids of the items in the exported .json-file
+            should be create from the filenames of the images
+        include_items_without_labels_in_annotations_file (True): whether items should be included in the
+            exported .json-file that do have an empty annotations list
     """
 
     def __init__(
@@ -922,7 +926,8 @@ class DatumaroDatasetExporter(
         num_decimals: int = None,
         tolerance: int = None,
         treat_polyline_as_segmentation: bool = False,
-        include_items_without_labels_in_annotations_file: bool = True
+        include_items_without_labels_in_annotations_file: bool = True,
+        sync_item_id_with_filename: bool = True
     ) -> None:
         data_path, export_media = self._parse_data_path(
             export_dir=export_dir,
@@ -956,6 +961,7 @@ class DatumaroDatasetExporter(
         self.tolerance = tolerance
         self.treat_polyline_as_segmentation = treat_polyline_as_segmentation
         self.include_items_without_labels_in_annotations_file = include_items_without_labels_in_annotations_file
+        self.sync_item_id_with_filename = sync_item_id_with_filename
 
         self._item_id = None
         self._item_id_map = None
@@ -1018,7 +1024,7 @@ class DatumaroDatasetExporter(
             file_name = uuid
 
         ## get item_id
-        if self._item_id_map is not None:
+        if self._item_id_map is not None and not self.sync_item_id_with_filename:
             item_id = self._item_id_map.get(image_or_path, None)
             if item_id is None:
                 msg = (
@@ -1029,7 +1035,7 @@ class DatumaroDatasetExporter(
                 return
         else:
             # create item_id from filename
-            item_id = uuid
+            item_id = "".join(uuid.split(".")[:-1])
 
         ## write only images to disk without labels if label is None
         self._has_labels = True
@@ -1117,6 +1123,9 @@ class DatumaroDatasetExporter(
                         % (type(label_field), self.label_cls)
                     )
                     continue
+
+        if not item_annotations and not self.include_items_without_labels_in_annotations_file:
+            return
 
         item_dict = {"id": item_id,
                      "annotations": item_annotations,

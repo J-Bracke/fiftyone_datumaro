@@ -1,3 +1,17 @@
+## Datumaro-Fork Readme:
+This repo is a fork of the original fiftyone repo which adds an implementation for labeled image datasets formatted in the datumaro format to the fiftyone project. \
+The implementation defines a new dataset type 'datumaro' with a custom DatumaroDatasetImporter and -Exporter. \
+It currently supports only images as media types and Label, Mask, Polygon, Bbox and Points as annotation types. \
+Further details regarding the datumaro format can be found in the <a href="https://open-edge-platform.github.io/datumaro/stable/docs/data-formats/formats/datumaro.html">datumaro documentation</a>. 
+
+The 'datumaro' dataset type implementation supports almost all features and functions as the natively provided 'COCODetectionDataset' dataset type. Furthermore the 'datumaro' dataset type importer and exporter functions provide several additional features for a more advanced dataset management. Some of the additional features are:
+- read metadata informations stored as tEXt chunks from .png-files into fiftyone fields
+- option to overwrite existing samples in a fiftyone dataset when importing new images if they have the same filename
+- option to create label tags from label attributes
+- export of several label fields together into one .json-file
+
+
+## Original Readme:
 <div align="center">
 <p align="center">
 
