@@ -148,6 +148,9 @@ def add_datumaro_labels(
             the keys of the imported label dictionaries as field names
         labels_or_path: a list of datumaro annotations or the path to a JSON file
             containing such data on disk
+            !Caution!: When the datumaro items in the json file do not contain an "image" key
+                       with a dict as value with a "path" key, then the image filename is created
+                       out of the item id + ".png".
         label_categories: can be any of the following:
             -   a list of labels dicts in the format of
                 :meth:`parse_datumaro_label_categories` specifying the classes where the
@@ -1786,7 +1789,10 @@ def _parse_datumaro_items(_items: list,
         annotations = defaultdict(list)
         item_attributes = {}
         for i in _items:
-            item_ids_filenames_map[i["id"]] = fos.normpath(i.get("image", {}).get("path", {}))
+            try:
+                item_ids_filenames_map[i["id"]] = fos.normpath(i.get("image", {}).get("path", {}))
+            except:
+                item_ids_filenames_map[i["id"]] = fos.normpath(i["id"] + ".png")
             if i["annotations"] is not None:
                 for a in i["annotations"]:
                     annotations[i["id"]].append(DatumaroObject.from_anno_dict(a, ann_attrs=ann_attrs, tag_attributes=tag_attributes))
