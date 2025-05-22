@@ -1679,6 +1679,8 @@ def read_metadata_from_image_file(image_path: str) -> dict:
             geo_object = fiftyone.GeoLocation().from_dict(meta_dict)
             geo_object.point = [meta_dict["longitude"], meta_dict["latitude"]]
             metadata_fields_dict[meta_object] = geo_object
+        elif meta_object == "old_header":
+            continue
         else:
             metadata_fields_dict[meta_object] = fiftyone.DynamicEmbeddedDocument().from_dict(meta_dict)
     
