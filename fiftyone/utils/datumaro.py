@@ -63,7 +63,8 @@ def add_datumaro_labels(
     only_matching: bool = False,
     shuffle: bool = False,
     seed: str = None,
-    max_samples: int = None
+    max_samples: int = None,
+    label_version_tag: str = None
 ) -> None:
     """Adds the given datumaro labels to the collection.
 
@@ -175,7 +176,7 @@ def add_datumaro_labels(
             -   ``False``: do not load item attributes
             -   a name or list of names of specific attributes to load
         tag_attributes ("uuid"): a list of attributes names that will be concatenated\
-                               with a seperating underscore to create a tag string.
+                                 with a seperating underscore to create a tag string.
         use_polylines (False): whether to represent segmentations as
             :class:`fiftyone.core.labels.Polylines` instances rather than
             :class:`fiftyone.core.labels.Detections` with dense masks
@@ -207,7 +208,8 @@ def add_datumaro_labels(
             number of samples loaded may be less than this maximum value if the
             dataset does not contain sufficient samples matching your
             requirements. By default, all matching samples are loaded
-
+        label_version_tag: tag to define a version of a label, e.g. when several versions of a label
+                           for the same item should be uploaded 
     """
     print("[" + str(datetime.now()) + "]" + "<info>: Parsing items label from file ...")
     if etau.is_str(labels_or_path):
@@ -285,17 +287,17 @@ def add_datumaro_labels(
         label_field = "ground_truth"
         label_field_key = lambda k: label_field + "_" + k
 
-    labels = {"detections": {},
-              "polygons": {},
-              "segmentations": {},
-              "keypoints": {},
-              "classifications": {},
-              "item_attributes": {}
-              }
 
     print("[" + str(datetime.now()) + "]" + "<info>: Creating fiftyone label elements for items:")
     # iterate through samples with item_id
     for item_id in tqdm(matching_item_ids):
+        labels = {"detections": {},
+                  "polygons": {},
+                  "segmentations": {},
+                  "keypoints": {},
+                  "classifications": {},
+                  "item_attributes": {}
+                }
         sample_view = sample_collection.select_by("item_id", item_id, ordered=True)
         sample_view.compute_metadata()
         width, height = sample_view.values(["metadata.width", "metadata.height"])
@@ -385,42 +387,44 @@ def add_datumaro_labels(
                 item_attributes_label = fol.Classification(label="item_attributes", tags=tag, **attributes)
                 labels["item_attributes"][item_id] = fol.Classifications(classifications=[item_attributes_label])
 
-    if item_attrs != False:
-        _label_types.append("item_attributes")
+        if item_attrs != False:
+            _label_types.append("item_attributes")
 
-    if use_polylines:
-        if "polygons" not in _label_types:
-            _label_types.append("polygons")
-        _label_types.remove("segmentations")
+        if use_polylines:
+            if "polygons" not in _label_types:
+                _label_types.append("polygons")
+            _label_types.remove("segmentations")
 
-    for label_type in _label_types:
-        print("[" + str(datetime.now()) + "]" + "<info>: Adding elements for label_type '" + label_type + "' to the fiftyone database:")
-        label_type_specific_label_dict = dict(sorted(labels[label_type].items()))
-        label_type_specific_view = sample_collection.select_by("item_id", label_type_specific_label_dict.keys(), ordered=True)
+        for label_type in _label_types:
+            label_type_specific_label_dict = dict(sorted(labels[label_type].items()))
+            label_type_specific_view = sample_collection.select_by("item_id", label_type_specific_label_dict.keys(), ordered=True)
 
-        if label_type == "item_attributes":
-            label_type_field = "classifications"
-        elif label_type == "polygons":
-            label_type_field = "polylines"
-        elif label_type == "segmentations":
-            label_type_field = "detections"
-        else:
-            label_type_field = label_type
+            if label_type == "item_attributes":
+                label_type_field = "classifications"
+            elif label_type == "polygons":
+                label_type_field = "polylines"
+            elif label_type == "segmentations":
+                label_type_field = "detections"
+            else:
+                label_type_field = label_type
 
-        if label_type_specific_view.has_field(label_field_key(label_type)) and not overwrite_labels:
-            label_type_specific_field_list = label_type_specific_view.values(label_field_key(label_type))
+            if label_type_specific_view.has_field(label_field_key(label_type)) and not overwrite_labels:
+                label_type_specific_field_list = label_type_specific_view.values(label_field_key(label_type))
 
-            for x_add_pos, x_add_label in enumerate(label_type_specific_label_dict.values()):
-                if label_type_specific_field_list[x_add_pos] is not None:
-                    label_type_specific_field_list[x_add_pos][label_type_field].extend(x_add_label[label_type_field])
-                else:
-                    label_type_specific_field_list[x_add_pos] = x_add_label
+                for x_add_pos, x_add_label in enumerate(label_type_specific_label_dict.values()):
+                    if label_type_specific_field_list[x_add_pos] is not None:
+                        label_type_specific_field_list[x_add_pos][label_type_field].extend(x_add_label[label_type_field])
+                    else:
+                        label_type_specific_field_list[x_add_pos] = x_add_label
 
-            label_type_specific_view.set_values(label_field_key(label_type), label_type_specific_field_list, dynamic=True, progress=True)
+                label_type_specific_view.set_values(label_field_key(label_type), label_type_specific_field_list, dynamic=True, progress=False)
 
-        elif label_type_specific_label_dict:
-            label_type_specific_view.set_values(label_field_key(label_type), label_type_specific_label_dict.values(), dynamic=True, progress=True)
-            label_type_specific_view.tag_labels("test_tag", label_fields=label_field_key(label_type))
+            elif label_type_specific_label_dict:
+                label_type_specific_view.set_values(label_field_key(label_type), label_type_specific_label_dict.values(), dynamic=True, progress=False)
+                if label_version_tag:
+                    label_type_specific_view.tag_labels(label_version_tag, label_fields=label_field_key(label_type))
+    
+        del labels
 
 class DatumaroDatasetImporter(
     foud.LabeledImageDatasetImporter, foud.ImportPathsMixin
@@ -1666,22 +1670,28 @@ def read_metadata_from_image_file(image_path: str) -> dict:
     read metadata from .png file in tEXT format
     """
     from PIL import Image
-    import json
+    import json, fiftyone
     
     img = Image.open(image_path)
     metadata_dict = img.info
     metadata_fields_dict = {}
 
-    for meta_object in metadata_dict.keys():
-        # it is assumend that every items value is a dict formatted in a json string
-        meta_dict = json.loads(metadata_dict[meta_object])
+    for meta_object in metadata_dict:
         if meta_object == "recording_location":
-            geo_object = fiftyone.GeoLocation().from_dict(meta_dict)
-            geo_object.point = [meta_dict["longitude"], meta_dict["latitude"]]
-            metadata_fields_dict[meta_object] = geo_object
-        elif meta_object == "old_header":
-            continue
+            location = json.loads(metadata_dict[meta_object])
+            metadata_fields_dict["recording_location"] = fiftyone.GeoLocation(point=[location["lon"], location["lat"]])
+        
+        elif meta_object == "recording_timestamp":
+            metadata_fields_dict["recording_timestamp"] = datetime.fromtimestamp(float(metadata_dict[meta_object]))
+        
+        elif meta_object == "camera_name":
+            metadata_fields_dict["camera_name"] = metadata_dict[meta_object]
+
+        # metadata is a dict formatted in a json string
         else:
+            meta_dict = json.loads(metadata_dict[meta_object])
+            if meta_object == "weather":
+                meta_dict = flatten_dict(meta_dict)
             metadata_fields_dict[meta_object] = fiftyone.DynamicEmbeddedDocument().from_dict(meta_dict)
     
     return metadata_fields_dict
