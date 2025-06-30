@@ -73,7 +73,7 @@ def add_datumaro_labels(
     -   a list of datumaro annotations in the format below
     -   the path to a JSON file containing a list of datumaro annotations
     -   the path to a JSON file whose ``"annotations"`` key contains a list of
-        datumaro annotations
+        datumaro annotations 
 
     When ``label_type="detections"``, the labels should have format::
         [
