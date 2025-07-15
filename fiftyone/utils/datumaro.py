@@ -1283,7 +1283,7 @@ class DatumaroObject(object):
                 width, height = frame_size
                 points = []
                 for x, y in fou.iter_batches(self.points, 2):
-                        points.append((x / width, y / height))
+                    points.append((x / width, y / height))
                 points = [points]
         elif convert_mask_to_polyline and self.type == "mask":
             points = _get_polygons_for_segmentation(
@@ -1373,7 +1373,7 @@ class DatumaroObject(object):
 
         points = []
         for x, y in fou.iter_batches(self.points, 2):
-                points.append((x / width, y / height))
+            points.append((x / width, y / height))
 
         return fol.Keypoint(
             label=label, points=points, **attributes
@@ -1584,25 +1584,27 @@ class DatumaroObject(object):
                 type = "mask"
             else:
                 point_list = []
-                for points in label.points[0]:
-                    x, y = points
-                    points = [x * width, y * height]
-                    point_list.extend(points)
+                for label_point in label.points[0]:
+                    x, y = label_point
+                    point = [x * width, y * height]
+                    point_list.extend(point)
                 points = point_list
                 type = "polygon"
 
         elif isinstance(label, fol.Classification):
-            type="label"
+            type = "label"
             
         elif isinstance(label, fol.Keypoint):
             point_list = []
-            for points in label.points:
-                x, y = points
-                points = [x * width, y * height]
-                point_list.extend(points)
+            for label_point in label.points:
+                x, y = label_point
+                point = [x * width, y * height]
+                point_list.extend(point)
             points = point_list
-            visibility = len(points)
-            type="points"
+            visibility = []
+            for i_point_pair in len(points) // 2:
+                visibility.append(2)
+            type = "points"
 
         else:
             raise ValueError("Unsupported label type %s" % type(label))
