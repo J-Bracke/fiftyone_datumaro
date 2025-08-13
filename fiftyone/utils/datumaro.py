@@ -1678,22 +1678,16 @@ def read_metadata_from_image_file(image_path: str) -> dict:
     metadata_dict = img.info
     metadata_fields_dict = {}
 
-    for meta_object in metadata_dict:
+    for meta_object in metadata_dict.keys():
+        # it is assumend that every items value is a dict formatted in a json string
+        meta_dict = json.loads(metadata_dict[meta_object])
         if meta_object == "recording_location":
-            location = json.loads(metadata_dict[meta_object])
-            metadata_fields_dict["recording_location"] = fiftyone.GeoLocation(point=[location["lon"], location["lat"]])
-        
-        elif meta_object == "recording_timestamp":
-            metadata_fields_dict["recording_timestamp"] = datetime.fromtimestamp(float(metadata_dict[meta_object]))
-        
-        elif meta_object == "camera_name":
-            metadata_fields_dict["camera_name"] = metadata_dict[meta_object]
-
-        # metadata is a dict formatted in a json string
+            geo_object = fiftyone.GeoLocation().from_dict(meta_dict)
+            geo_object.point = [meta_dict["longitude"], meta_dict["latitude"]]
+            metadata_fields_dict[meta_object] = geo_object
+        elif meta_object == "old_header":
+            continue
         else:
-            meta_dict = json.loads(metadata_dict[meta_object])
-            if meta_object == "weather":
-                meta_dict = flatten_dict(meta_dict)
             metadata_fields_dict[meta_object] = fiftyone.DynamicEmbeddedDocument().from_dict(meta_dict)
     
     return metadata_fields_dict
